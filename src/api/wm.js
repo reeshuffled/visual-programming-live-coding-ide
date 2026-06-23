@@ -245,7 +245,12 @@ export function initWM(onContentResize) {
     const firstBtn = tb.querySelector('.wm-btn');
     tb.insertBefore(ctrl, firstBtn);
 
-    let _muted = false;
+    let _muted = videoEl ? videoEl.muted : false;
+    if (_muted) {
+      muteBtn.innerHTML = '<i class="fa-solid fa-volume-xmark"></i>';
+      muteBtn.classList.add('muted');
+      volSlider.style.opacity = '0.4';
+    }
 
     function _apply() {
       const linear = parseFloat(volSlider.value) / 100;
@@ -283,6 +288,33 @@ export function initWM(onContentResize) {
 
     // Prevent slider drag from bubbling to window drag handler
     volSlider.addEventListener('mousedown', e => e.stopPropagation());
+  }
+
+  function _addVideoControls(win, vid) {
+    const tb = win.querySelector('.wm-titlebar');
+    if (!tb) return;
+
+    const playBtn = document.createElement('button');
+    playBtn.className = 'wm-mute';
+    playBtn.title = 'Play / Pause';
+    playBtn.innerHTML = '<i class="fa-solid fa-pause"></i>';
+
+    const update = () => {
+      playBtn.innerHTML = vid.paused
+        ? '<i class="fa-solid fa-play"></i>'
+        : '<i class="fa-solid fa-pause"></i>';
+    };
+
+    playBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      vid.paused ? vid.play() : vid.pause();
+    });
+
+    vid.addEventListener('play', update);
+    vid.addEventListener('pause', update);
+
+    const audioCtrl = tb.querySelector('.wm-audio-ctrl');
+    tb.insertBefore(playBtn, audioCtrl);
   }
 
   function getWin(id) { return document.getElementById(id); }
@@ -645,13 +677,25 @@ export function initWM(onContentResize) {
       } else if (type === 'video') {
         const vid = document.createElement('video');
         vid.src = opts.src ?? '';
-        vid.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
+        vid.style.cssText = 'width:100%;display:block;';
         vid.autoplay = true;
         vid.muted = true;
         vid.loop = opts.loop !== false;
-        if (opts.controls) vid.controls = true;
+        vid.disablePictureInPicture = true;
+        vid.setAttribute('controlsList', 'nodownload nofullscreen noremoteplayback');
         body.style.overflow = 'hidden';
+        body.style.background = '#000';
         body.appendChild(vid);
+        vid.addEventListener('loadedmetadata', () => {
+          const tb = win.querySelector('.wm-titlebar');
+          const chrome = tb ? tb.getBoundingClientRect().height + 1 : 29;
+          const desk = win.parentElement ?? document.getElementById('desktop');
+          const maxW = desk ? desk.offsetWidth * 0.9 : vid.videoWidth;
+          const maxH = desk ? desk.offsetHeight * 0.9 : vid.videoHeight;
+          const scale = Math.min(1, maxW / vid.videoWidth, (maxH - chrome) / vid.videoHeight);
+          win.style.width  = `${Math.round(vid.videoWidth  * scale)}px`;
+          win.style.height = `${Math.round(vid.videoHeight * scale + chrome)}px`;
+        }, { once: true });
         _cleanup = () => { vid.pause(); vid.src = ''; };
       } else if (type === 'camera' || type === 'canvas' || type === 'shader') {
         let src;
@@ -689,6 +733,7 @@ export function initWM(onContentResize) {
       if (type === 'video' || type === 'html') {
         const videoEl = type === 'video' ? body.querySelector('video') : null;
         _addAudioControls(win, videoEl);
+        if (videoEl) _addVideoControls(win, videoEl);
       }
 
       desktop.appendChild(win);

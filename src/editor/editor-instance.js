@@ -359,6 +359,30 @@ export class EditorInstance {
     editorBody.appendChild(this.editorColumn);
     editorWin.querySelector('.wm-dup')?.remove();
 
+    // Replace full audio controls with mute-only button for Blockly sounds
+    editorWin.querySelector('.wm-audio-ctrl')?.remove();
+    const muteCtrl = document.createElement('span');
+    muteCtrl.className = 'wm-audio-ctrl';
+    muteCtrl.style.display = 'none';
+    const muteBtn = document.createElement('button');
+    muteBtn.className = 'wm-mute';
+    muteBtn.title = 'Mute blocks sounds';
+    muteBtn.innerHTML = '<i class="fa-solid fa-volume-high"></i>';
+    let _blocksMuted = false;
+    muteBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      _blocksMuted = !_blocksMuted;
+      muteBtn.innerHTML = _blocksMuted
+        ? '<i class="fa-solid fa-volume-xmark"></i>'
+        : '<i class="fa-solid fa-volume-high"></i>';
+      muteBtn.classList.toggle('muted', _blocksMuted);
+      if (this.blocklyWorkspace) this.blocklyWorkspace.getAudioManager().setMuted(_blocksMuted);
+    });
+    muteCtrl.appendChild(muteBtn);
+    this._blocksMuteCtrl = muteCtrl;
+    const firstBtn = editorWin.querySelector('.wm-titlebar .wm-btn');
+    editorWin.querySelector('.wm-titlebar').insertBefore(muteCtrl, firstBtn);
+
     editorWin._wmOnClose = () => {
       const title = editorWin.querySelector('.wm-title')?.textContent ?? this.title;
       if (!confirm(`Close "${title}" and its output? Running code will be stopped.`)) return false;
@@ -511,6 +535,7 @@ export class EditorInstance {
   _openBlocks() {
     this.blocksMode = true;
     activeBlocksEditor = this;
+    window.__ar_active_blocks_editor = this;
     this.editorWrap.style.display = 'none';
     this.blocksArea.style.display = 'flex';
     this._textBtn.classList.remove('ar-toggle-active');
@@ -521,7 +546,10 @@ export class EditorInstance {
       this.blocklyWorkspace = initBlockly(this.blocksDiv);
       const toolkitWin = document.getElementById(this._toolkitWinId);
       if (toolkitWin) registerSidebarDeleteZone(this.blocklyWorkspace, toolkitWin);
+      this.blocklyWorkspace.getAudioManager().setMuted(muteBtn.classList.contains('muted'));
     }
+
+    if (this._blocksMuteCtrl) this._blocksMuteCtrl.style.display = '';
 
     if (workspaceIsEmpty(this.blocklyWorkspace)) {
       try {
@@ -538,8 +566,10 @@ export class EditorInstance {
       this.cm.setValue(code);
       this.cm.setCursor(0);
     }
+    if (this._blocksMuteCtrl) this._blocksMuteCtrl.style.display = 'none';
     this.blocksMode = false;
     if (activeBlocksEditor === this) activeBlocksEditor = null;
+    if (window.__ar_active_blocks_editor === this) window.__ar_active_blocks_editor = null;
     this.blocksArea.style.display = 'none';
     this.editorWrap.style.display = '';
     this._textBtn.classList.add('ar-toggle-active');

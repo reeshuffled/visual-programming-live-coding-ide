@@ -88,14 +88,185 @@ window.onload = () => {
 
   const _stage = document.getElementById('wm-stage');
 
-  window.wm.registerBuiltin('win-toolkit', () => {
-    window.wm.spawn('API Toolbox', { id: 'win-toolkit', type: 'html', html: '' });
-    const win = document.getElementById('win-toolkit');
+  // ── Shared tooltip for toolkit snippets ───────────────────────────────────
+  const toolTipEl = document.createElement('div');
+  toolTipEl.id = 'toolkit-tooltip';
+  document.body.appendChild(toolTipEl);
+  const showTooltip = (text, anchorEl) => {
+    toolTipEl.textContent = text;
+    toolTipEl.style.display = 'block';
+    const rect = anchorEl.getBoundingClientRect();
+    toolTipEl.style.left = `${rect.right + 8}px`;
+    toolTipEl.style.top  = `${rect.top + rect.height / 2}px`;
+    toolTipEl.style.transform = 'translateY(-50%)';
+  };
+  const hideTooltip = () => { toolTipEl.style.display = 'none'; };
+
+  function _populateTextPanel(panel) {
+    for (const cat of TOOLKIT_CATEGORIES) {
+      const catEl = document.createElement('div');
+      catEl.className = 'toolkit-category';
+      catEl.textContent = cat.name;
+      panel.appendChild(catEl);
+      for (const cmd of cat.commands) {
+        const btn = document.createElement('div');
+        btn.className = 'toolkit-btn';
+        btn.draggable = true;
+        btn.innerHTML = `<span>${cmd.label}</span><span class="toolkit-info" title="">ℹ</span>`;
+        btn.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('application/x-ar-toolkit', cmd.code);
+          if (cmd.blockType) e.dataTransfer.setData('application/x-ar-block-type', cmd.blockType);
+          e.dataTransfer.effectAllowed = 'copy';
+          btn.classList.add('dragging');
+          hideTooltip();
+        });
+        btn.addEventListener('dragend', () => btn.classList.remove('dragging'));
+        if (cmd.hint) {
+          const infoSpan = btn.querySelector('.toolkit-info');
+          infoSpan.addEventListener('mouseenter', () => showTooltip(cmd.hint, infoSpan));
+          infoSpan.addEventListener('mouseleave', hideTooltip);
+          infoSpan.addEventListener('mousedown', (e) => e.stopPropagation());
+        }
+        panel.appendChild(btn);
+      }
+    }
+  }
+
+  function _buildToolkitContent(win) {
     const body = win.querySelector('.wm-body');
-    body.appendChild(document.getElementById('toolkit-panel'));
-    win._wmRescueContent = () => _stage.appendChild(document.getElementById('toolkit-panel'));
+    body.style.overflow = 'hidden';
+    body.style.flexDirection = 'column';
+    body.style.padding = '0';
+    body.style.background = '#f0f2f5';
+
+    const modeBar = document.createElement('div');
+    modeBar.className = 'ar-toolkit-modebar';
+
+    const textModeBtn = document.createElement('button');
+    textModeBtn.className = 'ar-toolkit-mode ar-toolkit-mode-active';
+    textModeBtn.title = 'Text snippets';
+    textModeBtn.innerHTML = '<i class="fa-solid fa-code"></i>';
+
+    const blocksModeBtn = document.createElement('button');
+    blocksModeBtn.className = 'ar-toolkit-mode';
+    blocksModeBtn.title = 'Block palette';
+    blocksModeBtn.innerHTML = '<i class="fa-solid fa-puzzle-piece"></i>';
+
+    modeBar.appendChild(textModeBtn);
+    modeBar.appendChild(blocksModeBtn);
+    body.appendChild(modeBar);
+
+    const textPanel = document.createElement('div');
+    textPanel.className = 'ar-toolkit-text';
+    _populateTextPanel(textPanel);
+    body.appendChild(textPanel);
+
+    const blocksPanel = document.createElement('div');
+    blocksPanel.className = 'ar-toolkit-blocks';
+    blocksPanel.style.display = 'none';
+
+    const catPanel = document.createElement('div');
+    catPanel.className = 'ar-toolkit-cats';
+
+    const listPanel = document.createElement('div');
+    listPanel.className = 'ar-toolkit-list';
+
+    const backBtn = document.createElement('button');
+    backBtn.className = 'blockly-back-btn';
+    backBtn.textContent = '← Back';
+
+    const paletteDiv = document.createElement('div');
+    paletteDiv.className = 'ar-toolkit-palette';
+
+    listPanel.appendChild(backBtn);
+    listPanel.appendChild(paletteDiv);
+    blocksPanel.appendChild(catPanel);
+    blocksPanel.appendChild(listPanel);
+    body.appendChild(blocksPanel);
+
+    let paletteWorkspace = null;
+    let inBlocksMode = false;
+
+    function ensurePalette() {
+      if (paletteWorkspace) return;
+      paletteWorkspace = initPaletteWorkspace(paletteDiv);
+      onPaletteClick(paletteWorkspace, (type) => {
+        window.__ar_active_blocks_editor?._addBlockToWorkspace(type);
+      });
+      backBtn.addEventListener('click', () => {
+        listPanel.style.display = 'none';
+        catPanel.style.display = '';
+      });
+      for (const { name, hue, blocks } of TOOLBOX_CATEGORY_META) {
+        const btn = document.createElement('button');
+        btn.className = 'blockly-cat-btn';
+        btn.textContent = name;
+        btn.style.background = `hsl(${hue}, 50%, 42%)`;
+        btn.addEventListener('click', async () => {
+          catPanel.style.display = 'none';
+          listPanel.style.display = 'flex';
+          backBtn.textContent = '← ' + name;
+          paletteWorkspace.clear();
+          const addedBlocks = [];
+          for (const { type } of blocks) {
+            const block = paletteWorkspace.newBlock(type);
+            block.initSvg(); block.render();
+            addedBlocks.push(block);
+          }
+          await finishBlockRenders();
+          let y = 10;
+          for (const block of addedBlocks) {
+            block.moveTo({ x: 10, y });
+            y += block.getHeightWidth().height + 14;
+          }
+          resizeBlockly(paletteWorkspace);
+          requestAnimationFrame(() => paletteWorkspace.scroll(0, 0));
+        });
+        catPanel.appendChild(btn);
+      }
+    }
+
+    function openText() {
+      textPanel.style.display = '';
+      blocksPanel.style.display = 'none';
+      textModeBtn.classList.add('ar-toolkit-mode-active');
+      blocksModeBtn.classList.remove('ar-toolkit-mode-active');
+      inBlocksMode = false;
+    }
+
+    function openBlocks() {
+      ensurePalette();
+      textPanel.style.display = 'none';
+      blocksPanel.style.display = 'flex';
+      textModeBtn.classList.remove('ar-toolkit-mode-active');
+      blocksModeBtn.classList.add('ar-toolkit-mode-active');
+      inBlocksMode = true;
+      resizeBlockly(paletteWorkspace);
+    }
+
+    textModeBtn.addEventListener('click', () => { if (inBlocksMode) openText(); });
+    blocksModeBtn.addEventListener('click', () => { if (!inBlocksMode) openBlocks(); });
+
+    new ResizeObserver(() => {
+      if (inBlocksMode && paletteWorkspace) resizeBlockly(paletteWorkspace);
+    }).observe(body);
+  }
+
+  let toolkitIdCounter = 1;
+
+  function createToolkit(id) {
+    toolkitIdCounter = Math.max(toolkitIdCounter, id);
+    const winId = id === 1 ? 'win-toolkit' : `win-toolkit-${id}`;
+    const title = id === 1 ? 'API Toolbox' : `API Toolbox ${id}`;
+    window.wm.spawn(title, { id: winId, type: 'html', html: '' });
+    const win = document.getElementById(winId);
+    _buildToolkitContent(win);
     win.querySelector('.wm-dup')?.remove();
-  });
+    win.querySelector('.wm-audio-ctrl')?.remove();
+    return win;
+  }
+
+  window.wm.registerBuiltin('win-toolkit', () => createToolkit(1));
 
   window.wm.registerBuiltin('win-camera', () => {
     window.wm.spawn('Camera', { id: 'win-camera', type: 'html', html: '' });
@@ -122,99 +293,6 @@ window.onload = () => {
 
   ['win-toolkit', 'win-camera', 'win-mic'].forEach(id => window.wm.createBuiltin(id));
 
-  // ── Toolkit text buttons ───────────────────────────────────────────────────
-  const toolkitBody = document.getElementById("toolkit-body");
-  const toolTipEl = document.createElement("div");
-  toolTipEl.id = "toolkit-tooltip";
-  document.body.appendChild(toolTipEl);
-
-  const showTooltip = (text, anchorEl) => {
-    toolTipEl.textContent = text;
-    toolTipEl.style.display = "block";
-    const rect = anchorEl.getBoundingClientRect();
-    toolTipEl.style.left = `${rect.right + 8}px`;
-    toolTipEl.style.top = `${rect.top + rect.height / 2}px`;
-    toolTipEl.style.transform = "translateY(-50%)";
-  };
-  const hideTooltip = () => { toolTipEl.style.display = "none"; };
-
-  for (const cat of TOOLKIT_CATEGORIES) {
-    const catEl = document.createElement("div");
-    catEl.className = "toolkit-category";
-    catEl.textContent = cat.name;
-    toolkitBody.appendChild(catEl);
-    for (const cmd of cat.commands) {
-      const btn = document.createElement("div");
-      btn.className = "toolkit-btn";
-      btn.draggable = true;
-      btn.innerHTML = `<span>${cmd.label}</span><span class="toolkit-info" title="">ℹ</span>`;
-      btn.addEventListener("dragstart", (e) => {
-        e.dataTransfer.setData("application/x-ar-toolkit", cmd.code);
-        if (cmd.blockType) e.dataTransfer.setData("application/x-ar-block-type", cmd.blockType);
-        e.dataTransfer.effectAllowed = "copy";
-        btn.classList.add("dragging");
-        hideTooltip();
-      });
-      btn.addEventListener("dragend", () => btn.classList.remove("dragging"));
-      if (cmd.hint) {
-        const infoSpan = btn.querySelector(".toolkit-info");
-        infoSpan.addEventListener("mouseenter", () => showTooltip(cmd.hint, infoSpan));
-        infoSpan.addEventListener("mouseleave", hideTooltip);
-        infoSpan.addEventListener("mousedown", (e) => e.stopPropagation());
-      }
-      toolkitBody.appendChild(btn);
-    }
-  }
-
-  // ── Blockly palette (shared, in win-toolkit) ───────────────────────────────
-  const blockyListPanel = document.getElementById("blockly-block-list");
-  const blockyCatPanel  = document.getElementById("blockly-categories");
-  let paletteWorkspace  = null;
-  let paletteReady      = false;
-
-  function ensurePalette() {
-    if (paletteReady) return;
-    paletteReady = true;
-    paletteWorkspace = initPaletteWorkspace(document.getElementById("blockly-palette"));
-    onPaletteClick(paletteWorkspace, (type) => {
-      window.__ar_active_blocks_editor?._addBlockToWorkspace(type);
-    });
-
-    const backBtn = document.getElementById("blockly-back-btn");
-    backBtn.addEventListener("click", () => {
-      blockyListPanel.style.display = "none";
-      blockyCatPanel.style.display = "block";
-    });
-
-    for (const { name, hue, blocks } of TOOLBOX_CATEGORY_META) {
-      const btn = document.createElement("button");
-      btn.className = "blockly-cat-btn";
-      btn.textContent = name;
-      btn.style.background = `hsl(${hue}, 50%, 42%)`;
-      btn.addEventListener("click", async () => {
-        blockyCatPanel.style.display = "none";
-        blockyListPanel.style.display = "flex";
-        backBtn.textContent = "← " + name;
-        paletteWorkspace.clear();
-        const addedBlocks = [];
-        for (const { type } of blocks) {
-          const block = paletteWorkspace.newBlock(type);
-          block.initSvg(); block.render();
-          addedBlocks.push(block);
-        }
-        await finishBlockRenders();
-        let y = 10;
-        for (const block of addedBlocks) {
-          block.moveTo({ x: 10, y });
-          y += block.getHeightWidth().height + 14;
-        }
-        resizeBlockly(paletteWorkspace);
-        requestAnimationFrame(() => paletteWorkspace.scroll(0, 0));
-      });
-      blockyCatPanel.appendChild(btn);
-    }
-  }
-
   // ── Editor instances ───────────────────────────────────────────────────────
   window.__ar_instances = new Map();
   const defaultCode = document.getElementById("code_text")?.innerHTML.trim() ?? '';
@@ -228,25 +306,6 @@ window.onload = () => {
       toolkitWinId: 'win-toolkit',
       defaultCode: id === 1 ? defaultCode : '',
     });
-
-    // Intercept _openBlocks to ensure palette is ready and track active blocks editor
-    const origOpen = inst._openBlocks.bind(inst);
-    inst._openBlocks = () => {
-      ensurePalette();
-      window.__ar_active_blocks_editor = inst;
-      origOpen();
-      // Show blockly category panel in toolkit
-      document.getElementById('toolkit-body').style.display = 'none';
-      blockyCatPanel.style.display = 'block';
-    };
-    const origClose = inst._closeBlocks.bind(inst);
-    inst._closeBlocks = () => {
-      origClose();
-      document.getElementById('toolkit-body').style.display = 'block';
-      blockyCatPanel.style.display = 'none';
-      blockyListPanel.style.display = 'none';
-    };
-
     window.__ar_instances.set(id, inst);
     return inst;
   }
@@ -279,20 +338,18 @@ window.onload = () => {
     if (outWin) { outWin.style.cssText += `;left:${x + w + 6}px;top:${y}px;width:${Math.min(500, dw - x - w - 16)}px;height:${h}px;display:flex;`; }
   });
 
-  // ── Sidebar toggle ─────────────────────────────────────────────────────────
-  const sidebarBtn = document.getElementById("sidebarBtn");
-  let sidebarOpen = localStorage.getItem("vl-sidebar-open") !== "0";
-  const applySidebar = () => {
-    const toolkitWin = document.getElementById("win-toolkit");
-    if (toolkitWin) toolkitWin.style.display = sidebarOpen ? "flex" : "none";
-    sidebarBtn?.classList.toggle("active", sidebarOpen);
-  };
-  sidebarBtn?.addEventListener("click", () => {
-    sidebarOpen = !sidebarOpen;
-    localStorage.setItem("vl-sidebar-open", sidebarOpen ? "1" : "0");
-    applySidebar();
+  // ── "New Toolkit" button ───────────────────────────────────────────────────
+  document.getElementById('newToolkitBtn')?.addEventListener('click', () => {
+    const id = ++toolkitIdCounter;
+    const win = createToolkit(id);
+    const desk = document.getElementById('desktop');
+    const dw = desk.offsetWidth, dh = desk.offsetHeight;
+    const offset = ((id - 1) % 6) * 28;
+    const w = Math.round(dw * 0.13), h = Math.round(dh * 0.7);
+    const x = Math.min(offset + 30, dw - w - 10);
+    const y = Math.min(offset + 30, dh - h - 44);
+    win.style.cssText += `;left:${x}px;top:${y}px;width:${w}px;height:${h}px;display:flex;`;
   });
-  applySidebar();
 
   // ── Files button ──────────────────────────────────────────────────────────
   const filesBtn = document.getElementById('filesBtn');
@@ -306,7 +363,7 @@ window.onload = () => {
       _filesBrowseWinId = await window.wm.browse('__nav_files__', (url, name) => {
         const ext = name.split('.').pop().toLowerCase();
         if (imageExts.has(ext)) window.wm.spawn(name, { type: 'image', src: url, w: 480, h: 360 });
-        else if (videoExts.has(ext)) window.wm.spawn(name, { type: 'video', src: url, w: 640, h: 480, controls: true });
+        else if (videoExts.has(ext)) window.wm.spawn(name, { type: 'video', src: url, w: 640, h: 480 });
         else if (audioExts.has(ext)) {
           const a = new Audio(url); a.controls = true;
           const winId = window.wm.spawn(name, { type: 'html', html: '', w: 320, h: 60 });

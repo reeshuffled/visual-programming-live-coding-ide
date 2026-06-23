@@ -243,15 +243,27 @@
       }
 
       /* ── Toolkit panel ───────────────────────────────────────────────────── */
-      #toolkit-panel {
-        width: 100%; min-width: 0; flex: 1; min-height: 0;
-        background: #f0f2f5;
-        display: flex; flex-direction: column;
-        overflow: hidden;
+      .ar-toolkit-modebar {
+        display: flex; flex-shrink: 0;
+        border-bottom: 1px solid #d0d4de;
+        background: #e4e8f0;
+      }
+      .ar-toolkit-mode {
+        flex: 1; padding: 5px 0;
+        border: none; background: transparent; cursor: pointer;
+        font-size: 11px; color: #666;
+        transition: background 0.1s, color 0.1s;
+      }
+      .ar-toolkit-mode:hover { background: #d8dce8; color: #333; }
+      .ar-toolkit-mode.ar-toolkit-mode-active { background: #1565c0; color: #fff; }
+      .ar-toolkit-text { overflow-y: auto; flex: 1; min-height: 0; font-family: Arial, sans-serif; }
+      .ar-toolkit-blocks {
+        flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
         font-family: Arial, sans-serif;
       }
-      #toolkit-body { overflow-y: auto; }
-      #blockly-categories { overflow-y: auto; }
+      .ar-toolkit-cats { overflow-y: auto; padding: 6px 0; }
+      .ar-toolkit-list { display: none; flex-direction: column; flex: 1; min-height: 0; }
+      .ar-toolkit-palette { flex: 1; min-height: 0; cursor: pointer; }
       .toolkit-category {
         padding: 8px 8px 3px;
         font-size: 10px; font-weight: bold; letter-spacing: 0.8px;
@@ -269,7 +281,6 @@
       .toolkit-btn:active { cursor: grabbing; background: #0d47a1; }
       .toolkit-btn.dragging { opacity: 0.5; }
       .toolkit-info { font-size: 10px; opacity: 0.7; margin-left: 4px; flex-shrink: 0; cursor: help; }
-      #blockly-categories { display: none; padding: 6px 0; }
       .blockly-cat-btn {
         display: block; width: calc(100% - 16px); margin: 3px 8px; padding: 6px 10px;
         border: none; border-radius: 3px; cursor: pointer;
@@ -278,7 +289,6 @@
       }
       .blockly-cat-btn:hover { filter: brightness(1.2); }
       .blockly-cat-btn:active { filter: brightness(0.88); }
-      #blockly-block-list { display: none; flex-direction: column; flex: 1; min-height: 0; }
       .blockly-back-btn {
         display: flex; align-items: center; gap: 5px; flex-shrink: 0;
         width: 100%; padding: 6px 10px;
@@ -287,7 +297,6 @@
         background: #e4e8f0; color: #444; user-select: none; box-sizing: border-box;
       }
       .blockly-back-btn:hover { background: #d8dce8; }
-      #blockly-palette { flex: 1; min-height: 0; cursor: pointer; }
       #toolkit-tooltip {
         position: fixed; background: #222; color: #fff;
         padding: 5px 9px; border-radius: 5px;
@@ -539,23 +548,15 @@ s.start();</div>
         </li>
         <li class="sep"></li>
         <li data-layout="split" title="Split layout (Ctrl+1)" class="active"><i class="fa-solid fa-table-columns"></i></li>
-        <li id="newEditorBtn" title="New Editor"><i class="fa-solid fa-plus"></i></li>
-        <li id="filesBtn" title="File Browser"><i class="fa-solid fa-folder-open"></i></li>
-        <li id="sidebarBtn" title="API Toolbox"><i class="fa-solid fa-toolbox"></i></li>
+        <li id="newEditorBtn" title="New Editor"><i class="fa-solid fa-file-code"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newToolkitBtn" title="New Toolkit"><i class="fa-solid fa-toolbox"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="filesBtn" title="File Browser"><i class="fa-solid fa-folder-open"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
         <li id="helpBtn" title="API Quick Reference" style="margin-left:auto;"><i class="fa-solid fa-circle-question"></i></li>
       </ul>
     </nav>
 
     <!-- Staged content for built-in WM windows; adopted into window bodies on init -->
     <div id="wm-stage" style="display:none">
-      <div id="toolkit-panel">
-        <div id="toolkit-body"></div>
-        <div id="blockly-categories"></div>
-        <div id="blockly-block-list">
-          <button class="blockly-back-btn" id="blockly-back-btn">← Back</button>
-          <div id="blockly-palette"></div>
-        </div>
-      </div>
       <canvas id="camera" height="900" width="1600"></canvas>
       <div id="mic-viz-wrap" style="width:100%;height:100%;display:flex;align-items:center;">
         <canvas id="mic-viz" height="64" style="width:100%;display:block;"></canvas>
