@@ -540,6 +540,183 @@ export function initWM(onContentResize) {
 
   // Pre-existing built-in windows have no audio output — no controls needed.
 
+  // ── Audio visualizer window builder ───────────────────────────────────────
+
+  function _buildVizWindow(win, body) {
+    body.style.cssText += 'flex-direction:column;padding:0;overflow:hidden;background:#0d0d1a;';
+
+    // Controls bar
+    const ctrl = document.createElement('div');
+    ctrl.style.cssText = 'display:flex;align-items:center;gap:5px;padding:4px 8px;background:#13131f;border-bottom:1px solid #2a2a3e;flex-shrink:0;';
+
+    const sourceSelect = document.createElement('select');
+    sourceSelect.style.cssText = 'flex:1;min-width:0;font-size:11px;background:#1e1e2e;color:#cdd6f4;border:1px solid #313244;border-radius:3px;padding:2px 4px;';
+
+    const styleSelect = document.createElement('select');
+    styleSelect.style.cssText = 'font-size:11px;background:#1e1e2e;color:#cdd6f4;border:1px solid #313244;border-radius:3px;padding:2px 4px;';
+    for (const s of ['wave', 'bars', 'ring']) {
+      const o = document.createElement('option');
+      o.value = s; o.textContent = s;
+      styleSelect.appendChild(o);
+    }
+
+    ctrl.appendChild(sourceSelect);
+    ctrl.appendChild(styleSelect);
+    body.appendChild(ctrl);
+
+    // Canvas
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'flex:1;width:100%;min-height:0;display:block;';
+    body.appendChild(canvas);
+
+    new ResizeObserver(() => {
+      canvas.width  = canvas.offsetWidth  * devicePixelRatio;
+      canvas.height = canvas.offsetHeight * devicePixelRatio;
+    }).observe(canvas);
+
+    // State
+    let rafId = null;
+    let toneAn = null;   // Tone.Analyser for master / channel sources
+    let rawAn  = null;   // raw AnalyserNode for mic / video sources
+    const audioCtx = Tone.getContext().rawContext;
+
+    function refreshSources() {
+      const prev = sourceSelect.value;
+      sourceSelect.innerHTML = '';
+      const srcs = [
+        { id: 'master', label: 'Master Output' },
+        { id: 'mic',    label: 'Mic' },
+      ];
+      desktop.querySelectorAll('.wm-win').forEach(w => {
+        if (w === win) return;
+        const title = w.querySelector('.wm-title')?.textContent?.trim() || w.id;
+        if (w.querySelector('video')) srcs.push({ id: 'vid:' + w.id, label: title + ' · video' });
+        if (_channels.has(w.id))     srcs.push({ id: 'ch:'  + w.id, label: title + ' · channel' });
+      });
+      for (const { id, label } of srcs) {
+        const o = document.createElement('option');
+        o.value = id; o.textContent = label; o.selected = id === prev;
+        sourceSelect.appendChild(o);
+      }
+      if (!sourceSelect.value) sourceSelect.selectedIndex = 0;
+    }
+
+    function disconnect() {
+      if (toneAn) { try { toneAn.dispose(); } catch (_) {} toneAn = null; }
+      if (rawAn && rawAn !== window.__ar_mic_analyser) {
+        try { rawAn.disconnect(); } catch (_) {}
+      }
+      rawAn = null;
+    }
+
+    function connect(id) {
+      disconnect();
+      if (id === 'master') {
+        toneAn = new Tone.Analyser({ type: styleSelect.value === 'wave' ? 'waveform' : 'fft', size: 128 });
+        Tone.getDestination().connect(toneAn);
+      } else if (id === 'mic') {
+        rawAn = window.__ar_mic_analyser; // may be null until mic is toggled on
+      } else if (id.startsWith('vid:')) {
+        const vid = document.getElementById(id.slice(4))?.querySelector('video');
+        if (vid) {
+          if (!vid._ar_mediaSource) {
+            vid._ar_mediaSource = audioCtx.createMediaElementSource(vid);
+            vid._ar_mediaSource.connect(audioCtx.destination);
+          }
+          const an = audioCtx.createAnalyser();
+          an.fftSize = 256; an.smoothingTimeConstant = 0.8;
+          vid._ar_mediaSource.connect(an);
+          rawAn = an;
+        }
+      } else if (id.startsWith('ch:')) {
+        const ch = _channels.get(id.slice(3));
+        if (ch) {
+          toneAn = new Tone.Analyser({ type: styleSelect.value === 'wave' ? 'waveform' : 'fft', size: 128 });
+          ch.connect(toneAn);
+        }
+      }
+    }
+
+    // Draw loop
+    const c2d = canvas.getContext('2d');
+
+    function frame() {
+      rafId = requestAnimationFrame(frame);
+      const W = canvas.width, H = canvas.height;
+      if (!W || !H) return;
+
+      // Re-fetch mic analyser each frame — it's created lazily
+      if (sourceSelect.value === 'mic' && !rawAn) rawAn = window.__ar_mic_analyser;
+
+      c2d.fillStyle = '#0d0d1a';
+      c2d.fillRect(0, 0, W, H);
+
+      let vals; // Float32Array, 0–1
+      if (toneAn) {
+        const raw = toneAn.getValue();
+        vals = Float32Array.from(raw, v => Math.max(0, Math.min(1, (v + 100) / 100)));
+      } else if (rawAn) {
+        const buf = new Uint8Array(rawAn.frequencyBinCount);
+        styleSelect.value === 'wave'
+          ? rawAn.getByteTimeDomainData(buf)
+          : rawAn.getByteFrequencyData(buf);
+        vals = Float32Array.from(buf, v => styleSelect.value === 'wave' ? v / 128 - 1 : v / 255);
+      } else return;
+
+      const n = vals.length;
+      const style = styleSelect.value;
+      const dpr = devicePixelRatio;
+
+      if (style === 'bars') {
+        const bw = W / n;
+        for (let i = 0; i < n; i++) {
+          const v = vals[i];
+          c2d.fillStyle = `hsl(${(i / n) * 240 + 180},80%,${30 + v * 35}%)`;
+          c2d.fillRect(i * bw, H - v * H, Math.max(1, bw - 1), v * H);
+        }
+      } else if (style === 'wave') {
+        c2d.beginPath();
+        c2d.strokeStyle = '#89dceb';
+        c2d.lineWidth = 2 * dpr;
+        for (let i = 0; i < n; i++) {
+          const x = (i / (n - 1)) * W;
+          const y = H / 2 - vals[i] * (H / 2);
+          i === 0 ? c2d.moveTo(x, y) : c2d.lineTo(x, y);
+        }
+        c2d.stroke();
+      } else { // ring
+        const cx = W / 2, cy = H / 2, r = Math.min(W, H) * 0.28;
+        c2d.beginPath();
+        c2d.strokeStyle = '#cba6f7';
+        c2d.lineWidth = 2 * dpr;
+        for (let i = 0; i <= n; i++) {
+          const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+          const v = vals[i % n];
+          const rad = r + v * r * 0.7;
+          const x = cx + Math.cos(a) * rad, y = cy + Math.sin(a) * rad;
+          i === 0 ? c2d.moveTo(x, y) : c2d.lineTo(x, y);
+        }
+        c2d.closePath();
+        c2d.stroke();
+      }
+    }
+
+    sourceSelect.addEventListener('mousedown', refreshSources);
+    sourceSelect.addEventListener('change', () => {
+      connect(sourceSelect.value);
+    });
+    styleSelect.addEventListener('change', () => {
+      if (toneAn) toneAn.type = styleSelect.value === 'wave' ? 'waveform' : 'fft';
+    });
+
+    refreshSources();
+    styleSelect.value = 'wave';
+    connect('master');
+    frame();
+
+    win._wmCleanup = () => { cancelAnimationFrame(rafId); disconnect(); };
+  }
+
   // ── Public API (exposed as window.wm) ────────────────────────────────────
 
   const api = {
@@ -625,10 +802,11 @@ export function initWM(onContentResize) {
      * @param {object} [opts] - { type, x, y, w, h, id, ...type-specific }
      *   type: 'html'   → opts.html (string)
      *   type: 'image'  → opts.src (URL or blob URL)
-     *   type: 'video'  → opts.src (URL or blob URL), opts.loop, opts.controls
+     *   type: 'video'  → opts.src (URL or blob URL), opts.loop
      *   type: 'camera' → mirrors #camera canvas
      *   type: 'canvas' → opts.z (default 0) mirrors layer canvas at z
      *   type: 'shader' → opts.shader (Shader instance)
+     *   type: 'viz'    → audio visualizer; source/style picker built-in
      * @returns {string}  window id
      */
     spawn(title, opts = {}) {
@@ -697,6 +875,8 @@ export function initWM(onContentResize) {
           win.style.height = `${Math.round(vid.videoHeight * scale + chrome)}px`;
         }, { once: true });
         _cleanup = () => { vid.pause(); vid.src = ''; };
+      } else if (type === 'viz') {
+        _buildVizWindow(win, body);
       } else if (type === 'camera' || type === 'canvas' || type === 'shader') {
         let src;
         if (type === 'camera') {

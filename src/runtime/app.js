@@ -351,6 +351,19 @@ window.onload = () => {
     win.style.cssText += `;left:${x}px;top:${y}px;width:${w}px;height:${h}px;display:flex;`;
   });
 
+  // ── "New Visualizer" button ────────────────────────────────────────────────
+  let _vizCount = 0;
+  document.getElementById('newVizBtn')?.addEventListener('click', () => {
+    const offset = (_vizCount++ % 8) * 24;
+    const desk = document.getElementById('desktop');
+    const dw = desk.offsetWidth, dh = desk.offsetHeight;
+    window.wm.spawn('Visualizer', {
+      type: 'viz', w: 400, h: 240,
+      x: Math.round((dw - 400) / 2) + offset,
+      y: Math.round((dh - 240) / 2) + offset,
+    });
+  });
+
   // ── Files button ──────────────────────────────────────────────────────────
   const filesBtn = document.getElementById('filesBtn');
   const imageExts = new Set(['jpg','jpeg','png','gif','webp','svg','bmp','ico']);

@@ -937,6 +937,11 @@ audio.start();`,
         hint: "Spawn a window mirroring a Shader's output canvas",
       },
       {
+        label: "spawn visualizer",
+        code: "wm.spawn('Visualizer', { type: 'viz', w: 400, h: 240 });",
+        hint: "Spawn an audio visualizer window — pick source (master, mic, video, channel) and style (bars, wave, ring) from built-in controls",
+      },
+      {
         label: "list windows",
         code: "console.log(wm.list());",
         hint: "List all current window ids in the desktop",
