@@ -780,51 +780,44 @@ export function initWM(onContentResize) {
     },
 
     /**
-     * Open a directory picker and spawn a floating file browser window.
-     * @param {string} [key]           - cache key (reuses handle without re-prompting)
-     * @param {function} [onSelect]    - called with (blobUrl, filename, fileHandle) on file click
-     * @param {object} [spawnOpts]     - { w, h, x, y, id } forwarded to spawn()
+     * Open a local file browser window. Re-uses previously granted folder handles
+     * without prompting; only shows a picker when no access has been granted yet
+     * or when the user explicitly clicks "Add folder".
+     * @param {string} [key]        - cache key for persisting handles across opens
+     * @param {function} [onSelect] - called with (blobUrl, filename, fileHandle)
+     * @param {object} [spawnOpts]  - { w, h, x, y, id } forwarded to spawn()
      * @returns {Promise<string>}  window id
      */
     async browse(key, onSelect, spawnOpts = {}) {
-      let dirHandle = null;
-      let fallback = null;
+      const multiKey     = key ? key + '_multi'    : null;
+      const fallbackKey  = key ? key + '_fallback' : null;
 
-      if (key && fileHandles.has(key)) {
-        const h = fileHandles.get(key);
-        if (h.kind === 'directory') {
-          try {
-            const perm = await h.queryPermission({ mode: 'read' });
-            if (perm === 'granted') dirHandle = h;
-          } catch (_) {}
-        }
-      }
+      let handles  = multiKey    ? (fileHandles.get(multiKey)    ? [...fileHandles.get(multiKey)] : []) : [];
+      let fallback = fallbackKey ? (fileHandles.get(fallbackKey) ?? null) : null;
 
-      if (!dirHandle) {
+      // Only prompt when we have nothing cached yet
+      if (!handles.length && !fallback) {
         if (window.showDirectoryPicker) {
           try {
-            dirHandle = await window.showDirectoryPicker({ mode: 'read' });
-            if (key) fileHandles.set(key, dirHandle);
+            const h = await window.showDirectoryPicker({ mode: 'read' });
+            handles.push(h);
+            if (multiKey) fileHandles.set(multiKey, handles);
           } catch (err) {
             if (err?.name === 'AbortError') throw err;
-            // API blocked (e.g. Brave Shields) — fall through to input fallback
           }
         }
-        if (!dirHandle) {
+        if (!handles.length) {
           fallback = await _pickDirViaInput();
           if (!fallback) throw Object.assign(new Error('Cancelled'), { name: 'AbortError' });
+          if (fallbackKey) fileHandles.set(fallbackKey, fallback);
         }
       }
 
-      const dirName = dirHandle ? dirHandle.name : fallback.name;
-      const winId = api.spawn(dirName, {
-        type: 'html',
-        html: '',
+      const winId = api.spawn('Local Files', {
+        type: 'html', html: '',
         w: spawnOpts.w ?? 260,
-        h: spawnOpts.h ?? 420,
-        x: spawnOpts.x,
-        y: spawnOpts.y,
-        id: spawnOpts.id,
+        h: spawnOpts.h ?? Math.min(120 + handles.length * 160, 520),
+        x: spawnOpts.x, y: spawnOpts.y, id: spawnOpts.id,
       });
       const win = document.getElementById(winId);
       const body = win.querySelector('.wm-body');
@@ -838,44 +831,58 @@ export function initWM(onContentResize) {
 
       const footer = document.createElement('div');
       footer.style.cssText = 'flex-shrink:0;padding:5px 6px;border-top:1px solid #e0e0e0;background:#fafafa;';
-      const changeBtn = document.createElement('button');
-      changeBtn.textContent = '📁 Change folder…';
-      changeBtn.style.cssText = 'width:100%;font-size:11px;padding:3px 8px;cursor:pointer;background:#f0f0f0;border:1px solid #ccc;border-radius:3px;';
-      footer.appendChild(changeBtn);
+      const addBtn = document.createElement('button');
+      addBtn.textContent = '+ Add folder';
+      addBtn.style.cssText = 'width:100%;font-size:11px;padding:3px 8px;cursor:pointer;background:#f0f0f0;border:1px solid #ccc;border-radius:3px;';
+      footer.appendChild(addBtn);
       body.appendChild(list);
       body.appendChild(footer);
 
-      async function renderDir(dh, fb) {
+      async function renderFolderSection(dh, container) {
+        const header = document.createElement('div');
+        header.style.cssText = 'padding:5px 8px 2px;font-size:9px;font-weight:bold;letter-spacing:0.6px;text-transform:uppercase;color:#888;border-top:1px solid #e8e8e8;margin-top:2px;';
+        header.textContent = dh.name;
+        container.appendChild(header);
+        await _renderDirContents(container, dh, 0, onSelect);
+      }
+
+      async function renderAll() {
         list.innerHTML = '';
-        win.querySelector('.wm-title').textContent = dh ? dh.name : fb.name;
-        if (dh) {
-          await _renderDirContents(list, dh, 0, onSelect);
+        if (fallback) {
+          _renderFlatFiles(list, fallback.files, onSelect);
         } else {
-          _renderFlatFiles(list, fb.files, onSelect);
+          for (const h of handles) await renderFolderSection(h, list);
         }
       }
 
-      changeBtn.addEventListener('click', async () => {
-        let newDirHandle = null;
-        let newFallback = null;
+      addBtn.addEventListener('click', async () => {
         if (window.showDirectoryPicker) {
           try {
-            newDirHandle = await window.showDirectoryPicker({ mode: 'read' });
-            if (key) fileHandles.set(key, newDirHandle);
+            const h = await window.showDirectoryPicker({ mode: 'read' });
+            handles.push(h);
+            if (multiKey) fileHandles.set(multiKey, handles);
           } catch (err) {
             if (err?.name === 'AbortError') return;
           }
+        } else {
+          const more = await _pickDirViaInput();
+          if (!more) return;
+          fallback = fallback
+            ? { name: fallback.name, files: [...fallback.files, ...more.files] }
+            : more;
+          if (fallbackKey) fileHandles.set(fallbackKey, fallback);
         }
-        if (!newDirHandle) {
-          newFallback = await _pickDirViaInput();
-          if (!newFallback) return;
+        try {
+          const desk = win.parentElement;
+          const maxH = desk ? desk.offsetHeight * 0.9 : 800;
+          win.style.height = Math.min(parseInt(win.style.height) + 160, maxH) + 'px';
+          await renderAll();
+        } catch (err) {
+          if (err?.name !== 'AbortError') console.warn('folder access denied', err);
         }
-        dirHandle = newDirHandle;
-        fallback = newFallback;
-        await renderDir(dirHandle, fallback);
       });
 
-      await renderDir(dirHandle, fallback);
+      await renderAll();
       return winId;
     },
 

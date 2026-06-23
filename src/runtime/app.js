@@ -353,14 +353,16 @@ window.onload = () => {
 
   // ── Files button ──────────────────────────────────────────────────────────
   const filesBtn = document.getElementById('filesBtn');
-  let _filesBrowseWinId = null;
+  const imageExts = new Set(['jpg','jpeg','png','gif','webp','svg','bmp','ico']);
+  const videoExts = new Set(['mp4','webm','mov','avi','mkv']);
+  const audioExts = new Set(['mp3','wav','ogg','flac','aac','m4a']);
+  let _fileBrowseCount = 0;
   filesBtn?.addEventListener('click', async () => {
-    if (_filesBrowseWinId && document.getElementById(_filesBrowseWinId)) { window.wm.focus(_filesBrowseWinId); return; }
-    const imageExts = new Set(['jpg','jpeg','png','gif','webp','svg','bmp','ico']);
-    const videoExts = new Set(['mp4','webm','mov','avi','mkv']);
-    const audioExts = new Set(['mp3','wav','ogg','flac','aac','m4a']);
+    const offset = (_fileBrowseCount++ % 8) * 24;
+    const desk = document.getElementById('desktop');
+    const x = 20 + offset, y = 20 + offset;
     try {
-      _filesBrowseWinId = await window.wm.browse('__nav_files__', (url, name) => {
+      await window.wm.browse('__nav_files__', (url, name) => {
         const ext = name.split('.').pop().toLowerCase();
         if (imageExts.has(ext)) window.wm.spawn(name, { type: 'image', src: url, w: 480, h: 360 });
         else if (videoExts.has(ext)) window.wm.spawn(name, { type: 'video', src: url, w: 640, h: 480 });
@@ -370,11 +372,7 @@ window.onload = () => {
           const body = document.getElementById(winId)?.querySelector('.wm-body');
           if (body) { body.style.cssText += 'align-items:center;padding:4px 8px;'; body.appendChild(a); a.play(); }
         }
-      });
-      const observer = new MutationObserver(() => {
-        if (!document.getElementById(_filesBrowseWinId)) { _filesBrowseWinId = null; observer.disconnect(); }
-      });
-      observer.observe(document.getElementById('desktop'), { childList: true });
+      }, { x, y });
     } catch (_) {}
   });
 
