@@ -6,6 +6,9 @@ import { startAudio, cleanupAudio } from '../api/audio.js';
 import { cleanupShaders } from '../api/shader.js';
 import { cleanupViz } from '../api/viz.js';
 import { cleanupMedia } from '../api/media.js';
+import { cleanupVideoSignal } from '../api/video-signal.js';
+import { cleanupSensors } from '../api/sensors.js';
+import { cleanupDesktop, addEditorIcon, removeEditorIcon, updateEditorIconLabel, duplicateEditor } from '../api/desktop-files.js';
 import { cleanupCameras } from '../api/camera.js';
 import { cleanupCaptures } from './editor-capture.js';
 import { stopVision } from '../api/vision.js';
@@ -15,8 +18,11 @@ import {
   loadWorkspaceJSON, registerSidebarDeleteZone,
 } from '../blocks/blocks.js';
 import { jsToBlocks } from '../blocks/js-to-blocks.js';
+import { initSearch } from './cm-search.js';
 
-const STORAGE_PREFIX = 'vl-ide-code-';
+const STORAGE_PREFIX      = 'vl-ide-code-';
+const EXEC_STATE_PREFIX   = 'vl-ide-exec-';
+const TITLE_PREFIX        = 'vl-ide-title-';
 const LEGACY_KEY = 'vl-ide-code';
 
 const ICONS = {
@@ -31,7 +37,7 @@ export let activeBlocksEditor = null;
 export class EditorInstance {
   constructor(id, { nativeTimers, wm, toolkitWinId, defaultCode = '' }) {
     this.id = id;
-    this.title = id === 1 ? 'Editor' : `Editor ${id}`;
+    this.title = localStorage.getItem(TITLE_PREFIX + id) ?? (id === 1 ? 'Editor' : `Editor ${id}`);
     this._native = nativeTimers;
     this._wm = wm;
     this._toolkitWinId = toolkitWinId;
@@ -118,6 +124,8 @@ export class EditorInstance {
 
     this.canvasWrapper = document.createElement('div');
     this.canvasWrapper.className = 'ar-canvas-wrapper';
+    this.canvasWrapper.tabIndex = -1;
+    this.canvasWrapper.style.outline = 'none';
     this.canvasWrapper.appendChild(this.mainCanvas);
 
     this.fsContainer = document.createElement('div');
@@ -143,18 +151,38 @@ export class EditorInstance {
     consoleLabelRow.className = 'ar-console-label';
     const consoleLabelText = document.createElement('span');
     consoleLabelText.textContent = 'Console';
-    const consoleClearLink = document.createElement('a');
-    consoleClearLink.href = '#';
-    consoleClearLink.textContent = 'Clear';
-    consoleClearLink.addEventListener('click', (e) => { e.preventDefault(); this.clearConsole(); });
-    const consolePopLink = document.createElement('a');
-    consolePopLink.href = '#';
-    consolePopLink.textContent = '↗';
-    consolePopLink.title = 'Pop out to window';
-    consolePopLink.addEventListener('click', (e) => { e.preventDefault(); this._popoutConsole(); });
+
+    const consoleBtns = document.createElement('div');
+    consoleBtns.className = 'ar-console-btns';
+
+    const consoleHideBtn = document.createElement('button');
+    consoleHideBtn.className = 'ar-console-btn';
+    consoleHideBtn.title = 'Hide console';
+    consoleHideBtn.innerHTML = '<i class="fa-solid fa-chevron-down"></i>';
+    consoleHideBtn.addEventListener('click', () => {
+      this.consolePanel.style.display = 'none';
+      this.consoleToggleBtn.classList.remove('ar-btn-active');
+      this.cm.refresh();
+      this.inlineWidgets.refresh();
+    });
+
+    const consoleClearBtn = document.createElement('button');
+    consoleClearBtn.className = 'ar-console-btn';
+    consoleClearBtn.title = 'Clear console';
+    consoleClearBtn.innerHTML = '<i class="fa-solid fa-eraser"></i>';
+    consoleClearBtn.addEventListener('click', () => this.clearConsole());
+
+    const consolePopBtn = document.createElement('button');
+    consolePopBtn.className = 'ar-console-btn';
+    consolePopBtn.title = 'Pop out to window';
+    consolePopBtn.innerHTML = '<i class="fa-solid fa-arrow-up-right-from-square"></i>';
+    consolePopBtn.addEventListener('click', () => this._popoutConsole());
+
+    consoleBtns.appendChild(consoleHideBtn);
+    consoleBtns.appendChild(consoleClearBtn);
+    consoleBtns.appendChild(consolePopBtn);
     consoleLabelRow.appendChild(consoleLabelText);
-    consoleLabelRow.appendChild(consoleClearLink);
-    consoleLabelRow.appendChild(consolePopLink);
+    consoleLabelRow.appendChild(consoleBtns);
 
     this.consolePanel = document.createElement('div');
     this.consolePanel.className = 'ar-console-panel';
@@ -199,6 +227,7 @@ export class EditorInstance {
     this.cm = CodeMirror(editorDiv, {
       mode: 'javascript',
       lineNumbers: true,
+      lineWrapping: true,
       value: initialCode,
       extraKeys: { 'Ctrl-Space': 'autocomplete', 'Ctrl-Q': (cm) => cm.foldCode(cm.getCursor()) },
       foldGutter: true,
@@ -210,6 +239,7 @@ export class EditorInstance {
     });
 
     this.inlineWidgets = initInlineWidgets(this.cm);
+    this.search = initSearch(this.cm, this.editorWrap);
 
     let saveTimer;
     this.cm.on('change', () => {
@@ -351,13 +381,17 @@ export class EditorInstance {
   // ── Window manager integration ─────────────────────────────────────────────
 
   _buildWindows() {
-    // Editor window
-    this._wm.spawn(this.title, { id: this.editorWinId, type: 'html', html: '' });
+    // Editor window — reasonable default size for code sketching
+    const desk = document.getElementById('desktop');
+    const dw = desk?.offsetWidth ?? 1280, dh = desk?.offsetHeight ?? 720;
+    const ew = Math.round(Math.min(660, dw * 0.5));
+    const eh = Math.round(Math.min(560, dh * 0.8));
+    this._wm.spawn(this.title, { id: this.editorWinId, type: 'html', html: '', w: ew, h: eh });
     const editorWin = document.getElementById(this.editorWinId);
     const editorBody = editorWin.querySelector('.wm-body');
     editorBody.style.overflow = 'hidden';
     editorBody.appendChild(this.editorColumn);
-    editorWin.querySelector('.wm-dup')?.remove();
+    editorWin.querySelector('.wm-dup')?.addEventListener('click', e => { e.stopPropagation(); duplicateEditor(this.id); });
 
     // Replace full audio controls with mute-only button for Blockly sounds
     editorWin.querySelector('.wm-audio-ctrl')?.remove();
@@ -382,12 +416,27 @@ export class EditorInstance {
     this._blocksMuteCtrl = muteCtrl;
     const firstBtn = editorWin.querySelector('.wm-titlebar .wm-btn');
     editorWin.querySelector('.wm-titlebar').insertBefore(muteCtrl, firstBtn);
+    // Auto-create a live-linked desktop icon for this editor
+    addEditorIcon(this.id, this.editorWinId, this.title);
 
+    // Close = hide (code preserved, icon re-opens it)
     editorWin._wmOnClose = () => {
-      const title = editorWin.querySelector('.wm-title')?.textContent ?? this.title;
-      if (!confirm(`Close "${title}" and its output? Running code will be stopped.`)) return false;
-      this.destroy();
-      return true;
+      if (this.btnState === 'running' || this.btnState === 'paused') {
+        this.reset();
+        this._setIdle();
+      }
+      editorWin.style.display = 'none';
+      const canvasWin = document.getElementById(this.canvasWinId);
+      if (canvasWin) canvasWin.style.display = 'none';
+    };
+    editorWin._wmOnTitleChange = (newTitle) => {
+      this.title = newTitle;
+      try { localStorage.setItem(TITLE_PREFIX + this.id, newTitle); } catch (_) {}
+      const ownTitle = editorWin.querySelector('.wm-title');
+      if (ownTitle && ownTitle.textContent !== newTitle) ownTitle.textContent = newTitle;
+      updateEditorIconLabel(this.id, newTitle);
+      const outWin = document.getElementById(this.canvasWinId);
+      if (outWin) { const t = outWin.querySelector('.wm-title'); if (t) t.textContent = `${newTitle} — Output`; }
     };
     editorWin._wmIsEditor = true;
 
@@ -398,15 +447,45 @@ export class EditorInstance {
         resizeBlockly(this.blocklyWorkspace);
     }).observe(editorWin);
 
-    // Output window
-    this._wm.spawn(`Output ${this.id === 1 ? '' : this.id}`.trim(), {
+  }
+
+  _ensureOutputWin() {
+    if (document.getElementById(this.canvasWinId)) return;
+    this._wm.spawn(`${this.title} — Output`, {
       id: this.canvasWinId, type: 'html', html: '', w: 640, h: 400,
     });
     const canvasWin = document.getElementById(this.canvasWinId);
+    canvasWin.classList.add('wm-draggable-body');
     const canvasBody = canvasWin.querySelector('.wm-body');
     canvasBody.style.flexDirection = 'column';
     canvasBody.appendChild(this.fsContainer);
     canvasWin._wmSpawnOpts = { title: `Output mirror`, type: 'canvas', z: 0 };
+    canvasWin._wmCleanup = () => {
+      if (this.btnState === 'running' || this.btnState === 'paused') {
+        this.reset();
+        this._setIdle();
+      }
+    };
+
+    // Mirror button — spawns a composited copy of all layers
+    const mirrorBtn = document.createElement('span');
+    mirrorBtn.className = 'wm-btn';
+    mirrorBtn.title = 'Spawn mirror window';
+    mirrorBtn.innerHTML = '<i class="fa-regular fa-clone"></i>';
+    let _mirrorCount = 0;
+    mirrorBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const mirrorId = `win-mirror-${this.id}${_mirrorCount++ ? `-${_mirrorCount}` : ''}`;
+      this._wm.spawn(`${this.title} — Mirror`, {
+        id: mirrorId,
+        type: 'canvas',
+        getLayers: () => [...this.fsContainer.querySelectorAll('canvas')]
+          .sort((a, b) => (parseInt(a.style.zIndex) || 0) - (parseInt(b.style.zIndex) || 0)),
+        w: 480, h: 270,
+      });
+    });
+    const firstBtn = canvasWin.querySelector('.wm-titlebar .wm-btn');
+    canvasWin.querySelector('.wm-titlebar').insertBefore(mirrorBtn, firstBtn);
   }
 
   // ── Globals injected into IIFE ─────────────────────────────────────────────
@@ -499,7 +578,7 @@ export class EditorInstance {
     this.consolePanel.style.display = 'none';
     this.consoleToggleBtn.classList.remove('ar-btn-active');
 
-    this._wm.spawn(`Console ${this.id}`, { id: floatId, type: 'html', html: '', w: 480, h: 240 });
+    this._wm.spawn(`${this.title} — Console`, { id: floatId, type: 'html', html: '', w: 480, h: 240 });
     const floatWin = document.getElementById(floatId);
     const body = floatWin.querySelector('.wm-body');
     body.style.cssText += 'padding:0;overflow:hidden;';
@@ -560,6 +639,11 @@ export class EditorInstance {
     resizeBlockly(this.blocklyWorkspace);
   }
 
+  loadBlocksJSON(json) {
+    if (!this.blocksMode) this._openBlocks();
+    if (this.blocklyWorkspace && json) loadWorkspaceJSON(this.blocklyWorkspace, json);
+  }
+
   _closeBlocks() {
     if (this.blocklyWorkspace) {
       const code = workspaceIsEmpty(this.blocklyWorkspace) ? '' : getWorkspaceCode(this.blocklyWorkspace);
@@ -581,8 +665,13 @@ export class EditorInstance {
 
   // ── Execution state machine ────────────────────────────────────────────────
 
+  _saveExecState(state) {
+    try { localStorage.setItem(EXEC_STATE_PREFIX + this.id, state); } catch (_) {}
+  }
+
   _setIdle() {
     this.btnState = 'idle';
+    this._saveExecState('idle');
     this.executeBtn.innerHTML = ICONS.play;
     this.executeBtn.title = 'Run';
     this.executeBtn.className = 'ar-btn ar-btn-green';
@@ -593,6 +682,7 @@ export class EditorInstance {
 
   _setRunning() {
     this.btnState = 'running';
+    this._saveExecState('running');
     this.executeBtn.innerHTML = ICONS.pause;
     this.executeBtn.title = 'Pause';
     this.executeBtn.className = 'ar-btn ar-btn-orange';
@@ -603,6 +693,7 @@ export class EditorInstance {
 
   _setPaused() {
     this.btnState = 'paused';
+    this._saveExecState('paused');
     this.executeBtn.innerHTML = ICONS.play;
     this.executeBtn.title = 'Resume';
     this.executeBtn.className = 'ar-btn ar-btn-green';
@@ -613,13 +704,17 @@ export class EditorInstance {
 
   _setStopped() {
     if (this.idleWatcher) { this._native.clearInterval(this.idleWatcher); this.idleWatcher = null; }
-    this.btnState = 'stopped';
-    this.executeBtn.innerHTML = ICONS.reset;
-    this.executeBtn.title = 'Reset';
-    this.executeBtn.className = 'ar-btn ar-btn-red';
-    this.stopBtn.style.display = 'none';
-    this.clearCanvasBtn.style.display = 'none';
-    this._updateTaskbarChip();
+    this._wm.close(this.canvasWinId);
+    const isPopped = !!document.getElementById(`win-console-${this.id}`);
+    if (!isPopped) {
+      this.consolePanel.style.display = 'none';
+      this.consoleToggleBtn.classList.remove('ar-btn-active');
+    }
+    this._setIdle();
+    if (!isPopped) {
+      this.cm.refresh();
+      this.inlineWidgets.refresh();
+    }
   }
 
   _updateTaskbarChip() {
@@ -627,7 +722,7 @@ export class EditorInstance {
     if (!chip) return;
     const dot = chip.querySelector('.wm-chip-dot');
     if (!dot) return;
-    const colors = { idle: '#888', running: '#4caf50', paused: '#ff9800', stopped: '#f44336' };
+    const colors = { idle: '#888', running: '#4caf50', paused: '#ff9800' };
     dot.style.background = colors[this.btnState] ?? '#888';
   }
 
@@ -657,11 +752,13 @@ export class EditorInstance {
       this._intervals, this._timeouts,
       this._native.clearInterval, this._native.clearTimeout,
     );
+    window.__ar_paused = true;
     this._setPaused();
   }
 
   resumeRunning() {
     const ns = `__ar_e${this.id}`;
+    window.__ar_paused = false;
     restoreTimers(this._pausedState, window[`${ns}_setInterval`], window[`${ns}_setTimeout`]);
     this._pausedState = null;
     this._setRunning();
@@ -669,6 +766,7 @@ export class EditorInstance {
   }
 
   reset() {
+    window.__ar_paused = false;
     this._pausedState = null;
     this._listeners.forEach(({ target, type, handler, options }) =>
       target?.removeEventListener(type, handler, options));
@@ -682,6 +780,9 @@ export class EditorInstance {
     cleanupShaders();
     cleanupViz();
     cleanupMedia();
+    cleanupVideoSignal();
+    cleanupSensors();
+    cleanupDesktop();
     cleanupCameras();
     cleanupCaptures();
     window.__ar_keepAlive = new Set();
@@ -702,6 +803,7 @@ export class EditorInstance {
   }
 
   _showOutputWin() {
+    this._ensureOutputWin();
     const outputWin = document.getElementById(this.canvasWinId);
     const editorWin = document.getElementById(this.editorWinId);
     if (!outputWin || outputWin.style.display === 'flex') return;
@@ -782,13 +884,17 @@ export class EditorInstance {
 
   destroy() {
     if (this.btnState === 'running' || this.btnState === 'paused') this.stopRunning();
+    removeEditorIcon(this.id);
 
     EditorInstance.removeFromManifest(this.id);
+    try { localStorage.removeItem(EXEC_STATE_PREFIX + this.id); } catch (_) {}
+    try { localStorage.removeItem(TITLE_PREFIX + this.id); } catch (_) {}
 
     const editorWin = document.getElementById(this.editorWinId);
     const canvasWin = document.getElementById(this.canvasWinId);
     if (editorWin) { editorWin._wmOnClose = null; editorWin.remove(); }
     if (canvasWin) { canvasWin._wmCleanup?.(); canvasWin.remove(); }
+    this._wm.saveState(); // flush WM state now so orphaned window IDs don't respawn on reload
 
     const ns = `__ar_e${this.id}`;
     for (const key of Object.keys(window).filter(k => k.startsWith(ns + '_'))) {
@@ -804,7 +910,7 @@ export class EditorInstance {
       const s = localStorage.getItem('vl-ide-editors');
       if (s) return JSON.parse(s);
     } catch (_) {}
-    return [1];
+    return [];
   }
 
   static saveManifest(ids) {

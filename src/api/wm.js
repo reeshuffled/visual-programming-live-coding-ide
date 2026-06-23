@@ -1,9 +1,7 @@
 // Window manager: draggable/resizable floating windows + named tiling layouts.
 // All layout coords are 0–1 fractions of desktop size, resolved to px at apply time.
 
-// win-camera and win-mic are toggle-controlled (shown by camera.js / mic.js).
-// win-console is output-controlled (shown by app.js when there's content).
-// Layouts only position the tiled windows; floating windows manage themselves.
+// All windows are spawned (no built-in/special windows). Layouts position tiled windows; floating windows manage themselves.
 
 import * as Tone from 'tone';
 
@@ -92,6 +90,10 @@ function _pickDirViaInput() {
   });
 }
 
+async function _exitFullscreen() {
+  if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+}
+
 function _pickFileViaInput(opts = {}) {
   return new Promise(resolve => {
     const input = document.createElement('input');
@@ -144,14 +146,6 @@ async function _renderDirContents(container, dirHandle, depth, onSelect) {
   }
 }
 
-const LAYOUTS = {
-  split: {
-    'win-toolkit':  { x: 0,    y: 0, w: 0.13, h: 1,    show: true },
-    'win-editor-1': { x: 0.13, y: 0, w: 0.87, h: 1,    show: true },
-    'win-canvas-1': { show: false },
-  },
-};
-
 // ── IndexedDB handle store (FileSystemFileHandle survives page reload) ────────
 const _IDB_NAME = 'vl-wm-handles';
 const _IDB_STORE = 'handles';
@@ -202,50 +196,157 @@ async function _deleteWinHandle(winId) {
 export function initWM(onContentResize) {
   const desktop = document.getElementById('desktop');
   let zTop = 100;
-  let currentLayout = 'split';
   const savedGeometry = new Map();
   const spawnedIds = new Set();
   const fileHandles = new Map();
-  const _builtinFactories = new Map();
+  const _droppedFileHandles = [];
+  const _browseRefreshCbs = new Set();
   let spawnCounter = 0;
+
+  // ── Undo / redo history ───────────────────────────────────────────────────
+  const _wmHistory = [];
+  const _wmRedoHistory = [];
+  const _WM_HISTORY_MAX = 20;
+
+  function _captureState() {
+    const wins = [];
+    desktop.querySelectorAll('.wm-win').forEach(win => {
+      const entry = {
+        id: win.id,
+        x: parseInt(win.style.left)   || 0,
+        y: parseInt(win.style.top)    || 0,
+        w: parseInt(win.style.width)  || 320,
+        h: parseInt(win.style.height) || 240,
+        visible:     win.style.display !== 'none' && !win._wmMinimized,
+        maximized:   win.classList.contains('wm-maximized'),
+        nochrome:    win.classList.contains('wm-no-chrome'),
+        transparent: win.classList.contains('wm-transparent'),
+        _restore:    win._wmRestoreHandler ?? null,
+      };
+      if (spawnedIds.has(win.id)) {
+        const opts = win._wmSpawnOpts;
+        if (opts && !['canvas','shader','camera'].includes(opts.type)) {
+          entry.spawned = true;
+          entry.title = win.querySelector('.wm-title')?.textContent ?? opts.title;
+          entry.type  = opts.type;
+          entry.html  = opts.html;
+          entry.src   = opts.src;
+          entry.loop  = opts.loop;
+        }
+      }
+      wins.push(entry);
+    });
+    return wins;
+  }
+
+  function _applySnapshot(snapshot) {
+    snapshot.forEach(entry => {
+      const win = document.getElementById(entry.id);
+      if (win) {
+        win.style.left   = `${entry.x}px`;
+        win.style.top    = `${entry.y}px`;
+        win.style.width  = `${entry.w}px`;
+        win.style.height = `${entry.h}px`;
+        if (entry.visible && win.style.display === 'none') {
+          win.style.display = 'flex';
+          win._wmMinimized  = false;
+          taskbar.querySelector(`[data-win-id="${entry.id}"]`)?.remove();
+          if (!taskbar.querySelector('.wm-taskbar-chip')) taskbar.style.display = 'none';
+        }
+        win.classList.toggle('wm-no-chrome',   !!entry.nochrome);
+        win.classList.toggle('wm-transparent', !!entry.transparent);
+      } else if (entry.spawned) {
+        const id = api.spawn(entry.title, {
+          id: entry.id, type: entry.type,
+          x: entry.x, y: entry.y, w: entry.w, h: entry.h,
+          html: entry.html, src: entry.src, loop: entry.loop,
+        });
+        const newWin = id && document.getElementById(id);
+        if (newWin) {
+          if (entry.nochrome)    newWin.classList.add('wm-no-chrome');
+          if (entry.transparent) newWin.classList.add('wm-transparent');
+        }
+      } else if (entry._restore) {
+        entry._restore();
+      }
+    });
+  }
+
+  function _pushSnapshot(snapshot) {
+    _wmRedoHistory.length = 0;
+    _wmHistory.push(snapshot);
+    if (_wmHistory.length > _WM_HISTORY_MAX) _wmHistory.shift();
+    _updateHistoryBtns();
+  }
+
+  function _pushHistory() {
+    _pushSnapshot(_captureState());
+  }
+
+  function _undoHistory() {
+    const snapshot = _wmHistory.pop();
+    if (!snapshot) return;
+    _wmRedoHistory.push(_captureState());
+    _applySnapshot(snapshot);
+    _updateHistoryBtns();
+    _saveState();
+  }
+
+  function _redoHistory() {
+    const snapshot = _wmRedoHistory.pop();
+    if (!snapshot) return;
+    _wmHistory.push(_captureState());
+    _applySnapshot(snapshot);
+    _updateHistoryBtns();
+    _saveState();
+  }
+
+  function _updateHistoryBtns() {
+    const u = document.getElementById('undoWinBtn');
+    const r = document.getElementById('redoWinBtn');
+    if (u) { u.toggleAttribute('disabled', !_wmHistory.length);     u.style.opacity = _wmHistory.length     ? '1' : '0.4'; }
+    if (r) { r.toggleAttribute('disabled', !_wmRedoHistory.length); r.style.opacity = _wmRedoHistory.length ? '1' : '0.4'; }
+  }
 
   // ── State persistence ─────────────────────────────────────────────────────
   const _SAVE_KEY = 'vl-wm-state';
   let _savePending = null;
 
+  function _flushState() {
+    const wins = [];
+    desktop.querySelectorAll('.wm-win').forEach(win => {
+      const entry = {
+        id: win.id,
+        x: parseInt(win.style.left)  || 0,
+        y: parseInt(win.style.top)   || 0,
+        w: parseInt(win.style.width) || 320,
+        h: parseInt(win.style.height)|| 240,
+        visible:     win.style.display !== 'none' && !win._wmMinimized,
+        maximized:   win.classList.contains('wm-maximized'),
+        nochrome:    win.classList.contains('wm-no-chrome'),
+        transparent: win.classList.contains('wm-transparent'),
+      };
+      if (spawnedIds.has(win.id)) {
+        const opts = win._wmSpawnOpts;
+        if (!opts) return;
+        if (['canvas','shader','camera'].includes(opts.type)) return;
+        const isBlobSrc = opts.src?.startsWith('blob:');
+        entry.spawned = true;
+        entry.title   = win.querySelector('.wm-title')?.textContent ?? opts.title;
+        entry.type    = opts.type;
+        if (opts.html !== undefined) entry.html = opts.html;
+        if (!isBlobSrc && opts.src !== undefined) entry.src = opts.src;
+        if (opts.loop !== undefined) entry.loop = opts.loop;
+        if (isBlobSrc) entry.hasHandle = true; // handle stored in IndexedDB
+      }
+      wins.push(entry);
+    });
+    try { localStorage.setItem(_SAVE_KEY, JSON.stringify({ wins })); } catch (_) {}
+  }
+
   function _saveState() {
     clearTimeout(_savePending);
-    _savePending = setTimeout(() => {
-      const wins = [];
-      desktop.querySelectorAll('.wm-win').forEach(win => {
-        const entry = {
-          id: win.id,
-          x: parseInt(win.style.left)  || 0,
-          y: parseInt(win.style.top)   || 0,
-          w: parseInt(win.style.width) || 320,
-          h: parseInt(win.style.height)|| 240,
-          visible:     win.style.display !== 'none' && !win._wmMinimized,
-          maximized:   win.classList.contains('wm-maximized'),
-          nochrome:    win.classList.contains('wm-no-chrome'),
-          transparent: win.classList.contains('wm-transparent'),
-        };
-        if (spawnedIds.has(win.id)) {
-          const opts = win._wmSpawnOpts;
-          if (!opts) return;
-          if (['canvas','shader','camera'].includes(opts.type)) return;
-          const isBlobSrc = opts.src?.startsWith('blob:');
-          entry.spawned = true;
-          entry.title   = win.querySelector('.wm-title')?.textContent ?? opts.title;
-          entry.type    = opts.type;
-          if (opts.html !== undefined) entry.html = opts.html;
-          if (!isBlobSrc && opts.src !== undefined) entry.src = opts.src;
-          if (opts.loop !== undefined) entry.loop = opts.loop;
-          if (isBlobSrc) entry.hasHandle = true; // handle stored in IndexedDB
-        }
-        wins.push(entry);
-      });
-      try { localStorage.setItem(_SAVE_KEY, JSON.stringify({ wins })); } catch (_) {}
-    }, 400);
+    _savePending = setTimeout(_flushState, 400);
   }
 
   // ── Taskbar ────────────────────────────────────────────────────────────────
@@ -405,36 +506,6 @@ export function initWM(onContentResize) {
 
   function getWin(id) { return document.getElementById(id); }
 
-  function applyLayout(name) {
-    const layout = LAYOUTS[name];
-    if (!layout) return;
-    currentLayout = name;
-    const dw = desktop.offsetWidth;
-    const dh = desktop.offsetHeight;
-
-    for (const [id, cfg] of Object.entries(layout)) {
-      let win = document.getElementById(id);
-      if (!win) {
-        const factory = _builtinFactories.get(id);
-        if (factory) factory();
-        win = document.getElementById(id);
-      }
-      if (!win) continue;
-      if (!cfg.show) { win.style.display = 'none'; continue; }
-      win.style.display = 'flex';
-      win.style.left   = `${Math.round(cfg.x * dw)}px`;
-      win.style.top    = `${Math.round(cfg.y * dh)}px`;
-      win.style.width  = `${Math.round(cfg.w * dw)}px`;
-      win.style.height = `${Math.round(cfg.h * dh)}px`;
-      win.style.zIndex = String(zTop++);
-    }
-
-    document.querySelectorAll('[data-layout]').forEach(btn =>
-      btn.classList.toggle('active', btn.dataset.layout === name)
-    );
-    requestAnimationFrame(() => onContentResize?.());
-  }
-
   function bringToFront(win) {
     win.style.zIndex = String(zTop++);
   }
@@ -455,7 +526,10 @@ export function initWM(onContentResize) {
     bringToFront(win);
     const ox = e.clientX - win.offsetLeft;
     const oy = e.clientY - win.offsetTop;
+    const preSnap = _captureState();
+    let _moved = false;
     const onMove = e => {
+      _moved = true;
       const dw = desktop.offsetWidth, dh = desktop.offsetHeight;
       win.style.left = `${Math.max(0, Math.min(dw - 80,  e.clientX - ox))}px`;
       win.style.top  = `${Math.max(0, Math.min(dh - 28,  e.clientY - oy))}px`;
@@ -463,6 +537,7 @@ export function initWM(onContentResize) {
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      if (_moved) _pushSnapshot(preSnap);
       onContentResize?.();
       _saveState();
     };
@@ -481,7 +556,10 @@ export function initWM(onContentResize) {
     const sx = e.clientX, sy = e.clientY;
     const sw = win.offsetWidth, sh = win.offsetHeight;
     const sl = win.offsetLeft,  st = win.offsetTop;
+    const preSnap = _captureState();
+    let _resized = false;
     const onMove = e => {
+      _resized = true;
       const dx = e.clientX - sx, dy = e.clientY - sy;
       if (dir.includes('e')) win.style.width  = `${Math.max(180, sw + dx)}px`;
       if (dir.includes('s')) win.style.height = `${Math.max(80,  sh + dy)}px`;
@@ -499,6 +577,7 @@ export function initWM(onContentResize) {
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      if (_resized) _pushSnapshot(preSnap);
       onContentResize?.();
       _saveState();
     };
@@ -534,15 +613,17 @@ export function initWM(onContentResize) {
   desktop.addEventListener('click', e => {
     if (!e.target.closest('.wm-min')) return;
     const win = e.target.closest('.wm-win');
-    if (win) _minimizeToTaskbar(win);
+    if (win) { _pushHistory(); _minimizeToTaskbar(win); }
   });
 
-  // Close button — supports custom _wmOnClose handler (e.g. editor confirmation)
+  // Close button — supports custom _wmOnClose handler (e.g. editor)
   desktop.addEventListener('click', e => {
     if (!e.target.classList.contains('wm-close')) return;
     const win = e.target.closest('.wm-win');
+    _pushHistory();
     if (win._wmOnClose) {
       win._wmOnClose(); // handler responsible for removal
+      _saveState();
       return;
     }
     if (spawnedIds.has(win.id)) {
@@ -563,6 +644,7 @@ export function initWM(onContentResize) {
     const btn = e.target.closest('.wm-max');
     if (!btn) return;
     const win = btn.closest('.wm-win');
+    _pushHistory();
     _toggleMaximize(win, btn);
     onContentResize?.();
     _saveState();
@@ -624,6 +706,8 @@ export function initWM(onContentResize) {
       title.contentEditable = 'false';
       title.removeEventListener('blur', commit);
       title.removeEventListener('keydown', onKey);
+      const win = title.closest('.wm-win');
+      win?._wmOnTitleChange?.(title.textContent.trim());
     };
     const onKey = e => {
       if (e.key === 'Enter') { e.preventDefault(); commit(); }
@@ -659,29 +743,15 @@ export function initWM(onContentResize) {
     btn.classList.toggle('wm-ghost-on', win.classList.contains('wm-transparent'));
   });
 
-  // Nav layout buttons
-  document.querySelectorAll('[data-layout]').forEach(btn =>
-    btn.addEventListener('click', () => applyLayout(btn.dataset.layout))
-  );
-
-  // Hotkeys
-  document.addEventListener('keydown', e => {
-    if (!(e.ctrlKey || e.metaKey)) return;
-    if (e.key === '1') { e.preventDefault(); applyLayout('split'); }
-  });
-
-  // Re-tile on browser resize
-  window.addEventListener('resize', () => applyLayout(currentLayout));
-
   // Drop files from OS onto desktop → spawn image/video window at cursor
   desktop.addEventListener('dragover', e => {
-    if ([...e.dataTransfer.items].some(i => i.kind === 'file')) {
+    if (e.dataTransfer && [...e.dataTransfer.items].some(i => i.kind === 'file')) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     }
   });
   desktop.addEventListener('drop', async e => {
-    if (![...e.dataTransfer.items].some(i => i.kind === 'file')) return;
+    if (!e.dataTransfer || ![...e.dataTransfer.items].some(i => i.kind === 'file')) return;
     e.preventDefault();
     // Capture handles synchronously before event clears (getAsFileSystemHandle is async but must be initiated now)
     const items = [...e.dataTransfer.items];
@@ -691,19 +761,36 @@ export function initWM(onContentResize) {
     const dropY = e.clientY - deskRect.top;
     const handles = await Promise.all(handlePromises);
     let offsetX = 0;
+    let anyNew = false;
     for (const handle of handles) {
       if (!handle || handle.kind !== 'file') continue;
+      _droppedFileHandles.push(handle);
+      anyNew = true;
       const file = await handle.getFile();
       const ext = file.name.split('.').pop().toLowerCase();
       const isImg = ['jpg','jpeg','png','gif','webp','svg','bmp','ico','avif'].includes(ext);
       const isVid = ['mp4','webm','mov','avi','mkv'].includes(ext);
-      if (!isImg && !isVid) continue;
-      const url = URL.createObjectURL(file);
-      const x = Math.max(0, dropX - 160 + offsetX);
-      const y = Math.max(0, dropY - 14);
-      const id = api.spawn(file.name, { type: isImg ? 'image' : 'video', src: url, x, y });
-      await _storeWinHandle(id, handle);
-      offsetX += 24;
+      if (isImg || isVid) {
+        const url = URL.createObjectURL(file);
+        const x = Math.max(0, dropX - 160 + offsetX);
+        const y = Math.max(0, dropY - 14);
+        const id = api.spawn(file.name, { type: isImg ? 'image' : 'video', src: url, x, y });
+        await _storeWinHandle(id, handle);
+        offsetX += 24;
+      }
+    }
+    if (anyNew) {
+      if (_browseRefreshCbs.size === 0) {
+        api.browse('__nav_files__', (url, name) => {
+          const ext = name.split('.').pop().toLowerCase();
+          const isImg = ['jpg','jpeg','png','gif','webp','svg','bmp','ico','avif'].includes(ext);
+          const isVid = ['mp4','webm','mov','avi','mkv'].includes(ext);
+          if (isImg) api.spawn(name, { type: 'image', src: url, w: 480, h: 360 });
+          else if (isVid) api.spawn(name, { type: 'video', src: url, w: 640, h: 480 });
+        }, { x: Math.max(0, dropX + 20), y: Math.max(0, dropY - 100) }).catch(() => {});
+      } else {
+        _browseRefreshCbs.forEach(fn => fn());
+      }
     }
   });
 
@@ -870,6 +957,9 @@ export function initWM(onContentResize) {
       }
     }
 
+    win._vizSourceEl = sourceSelect;
+    win._vizStyleEl  = styleSelect;
+
     sourceSelect.addEventListener('mousedown', refreshSources);
     sourceSelect.addEventListener('change', () => {
       connect(sourceSelect.value);
@@ -949,7 +1039,7 @@ export function initWM(onContentResize) {
       bringToFront(win);
     },
 
-    /** Hide a window by id (built-ins hidden, spawned windows removed) */
+    /** Hide a window by id (spawned windows removed) */
     hide(id) {
       const win = getWin(id);
       if (!win) return;
@@ -960,10 +1050,70 @@ export function initWM(onContentResize) {
       } else {
         win.style.display = 'none';
       }
+      _saveState();
     },
 
     /** Alias for hide */
     close(id) { api.hide(id); },
+
+    /** Undo last destructive window operation */
+    undo() { _undoHistory(); },
+
+    /** Redo last undone window operation */
+    redo() { _redoHistory(); },
+
+    /** Snapshot current state onto undo stack (call before custom destructive ops) */
+    pushHistory() { _pushHistory(); },
+
+    /** Close (delete) all windows */
+    closeAll() {
+      _pushHistory();
+      [...spawnedIds].forEach(id => {
+        const win = getWin(id);
+        if (!win) { spawnedIds.delete(id); return; }
+        win._wmCleanup?.();
+        _disposeChannel(id);
+        _deleteWinHandle(id);
+        win.remove();
+        spawnedIds.delete(id);
+      });
+      clearTimeout(_savePending);
+      _savePending = null;
+      try { localStorage.setItem(_SAVE_KEY, JSON.stringify({ wins: [] })); } catch (_) {}
+    },
+
+
+
+    // Apply a WebGPU shader directly inside a window.
+    // code: WGSL fragment body string or full WGSL.
+    // opts: any Shader constructor opts — pass video: to feed a source, or omit to auto-detect.
+    // Returns the started Shader instance.
+    applyShader(id, code, opts = {}) {
+      const win = getWin(id);
+      if (!win) return null;
+      const body = win.querySelector('.wm-body');
+      if (!body) return null;
+
+      // Auto-detect video source from window type if not provided
+      let video = opts.video ?? null;
+      if (!video) {
+        const wo = win._wmSpawnOpts;
+        if (wo?.type === 'camera') {
+          video = document.getElementById('camera');
+        } else if (wo?.type === 'shader') {
+          video = wo.shader?.canvas ?? null;
+        } else {
+          // pick the first canvas or video element already in the body
+          video = body.querySelector('canvas, video') ?? null;
+        }
+      }
+
+      const { Shader: S } = window; // avoid import cycle — Shader is on window
+      if (!S) { console.warn('wm.applyShader: Shader not available'); return null; }
+      const s = new S(code, { ...opts, video, container: body });
+      s.start();
+      return s;
+    },
 
     /** Toggle visibility */
     toggle(id) {
@@ -1010,12 +1160,6 @@ export function initWM(onContentResize) {
       _toggleMaximize(win);
       onContentResize?.();
     },
-
-    /** Switch to a named layout */
-    layout(name) { applyLayout(name); },
-
-    /** Return the current layout name */
-    getLayout() { return currentLayout; },
 
     /**
      * Spawn a new floating window.
@@ -1105,11 +1249,14 @@ export function initWM(onContentResize) {
         if (type === 'camera') {
           src = document.getElementById('camera');
         } else if (type === 'canvas') {
-          src = window.__ar_layers?.get(opts.z ?? 0);
+          src = opts.canvas instanceof HTMLCanvasElement
+            ? opts.canvas
+            : window.__ar_layers?.get(opts.z ?? 0);
         } else {
           src = opts.shader?.canvas;
         }
-        if (src) {
+        const getLayers = opts.getLayers; // () => sorted HTMLCanvasElement[]
+        if (getLayers || src) {
           const dst = document.createElement('canvas');
           dst.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;';
           body.style.overflow = 'hidden';
@@ -1118,8 +1265,20 @@ export function initWM(onContentResize) {
           const ctx = dst.getContext('2d');
           let rafId;
           const copy = () => {
-            if (src.width && src.height) {
-              dst.width = src.width;
+            if (getLayers) {
+              const layers = getLayers().filter(c => !c._ar_webgpu);
+              // Ping shader readable canvases so they blit within their own RAF
+              layers.forEach(c => { if (c._ar_shaderReadable) c._ar_watched = true; });
+              if (layers.length && layers[0].width) {
+                dst.width  = layers[0].width;
+                dst.height = layers[0].height;
+                ctx.clearRect(0, 0, dst.width, dst.height);
+                for (const c of layers) {
+                  if (c.width && c.height) ctx.drawImage(c, 0, 0, dst.width, dst.height);
+                }
+              }
+            } else if (src.width && src.height) {
+              dst.width  = src.width;
               dst.height = src.height;
               ctx.drawImage(src, 0, 0);
             }
@@ -1137,7 +1296,7 @@ export function initWM(onContentResize) {
         win.classList.add('wm-draggable-body');
       }
 
-      if (type === 'video' || type === 'html') {
+      if ((type === 'video' || type === 'html') && opts.audio !== false) {
         const videoEl = type === 'video' ? body.querySelector('video') : null;
         _addAudioControls(win, videoEl);
         if (videoEl) _addVideoControls(win, videoEl);
@@ -1172,6 +1331,7 @@ export function initWM(onContentResize) {
           }
         } catch (_) { /* handle stale — fall through to picker */ }
       }
+      await _exitFullscreen();
       if (window.showOpenFilePicker) {
         try {
           const [handle] = await window.showOpenFilePicker({ multiple: false, ...opts });
@@ -1203,10 +1363,11 @@ export function initWM(onContentResize) {
       let handles  = multiKey    ? (fileHandles.get(multiKey)    ? [...fileHandles.get(multiKey)] : []) : [];
       let fallback = fallbackKey ? (fileHandles.get(fallbackKey) ?? null) : null;
 
-      // Only prompt when we have nothing cached yet
-      if (!handles.length && !fallback) {
+      // Only prompt when we have nothing cached yet (skip if dropped files already available)
+      if (!handles.length && !fallback && !_droppedFileHandles.length) {
         if (window.showDirectoryPicker) {
           try {
+            await _exitFullscreen();
             const h = await window.showDirectoryPicker({ mode: 'read' });
             handles.push(h);
             if (multiKey) fileHandles.set(multiKey, handles);
@@ -1222,7 +1383,7 @@ export function initWM(onContentResize) {
       }
 
       const winId = api.spawn('Local Files', {
-        type: 'html', html: '',
+        type: 'html', html: '', audio: false,
         w: spawnOpts.w ?? 260,
         h: spawnOpts.h ?? Math.min(120 + handles.length * 160, 520),
         x: spawnOpts.x, y: spawnOpts.y, id: spawnOpts.id,
@@ -1261,11 +1422,25 @@ export function initWM(onContentResize) {
         } else {
           for (const h of handles) await renderFolderSection(h, list);
         }
+        if (_droppedFileHandles.length) {
+          const hdr = document.createElement('div');
+          hdr.style.cssText = 'padding:5px 8px 2px;font-size:9px;font-weight:bold;letter-spacing:0.6px;text-transform:uppercase;color:#888;border-top:1px solid #e8e8e8;margin-top:2px;';
+          hdr.textContent = 'Dropped';
+          list.appendChild(hdr);
+          for (const fh of _droppedFileHandles) {
+            list.appendChild(_makeFileEntry(fh, 0, onSelect));
+          }
+        }
       }
+
+      _browseRefreshCbs.add(renderAll);
+      const prevCleanup = win._wmCleanup;
+      win._wmCleanup = () => { _browseRefreshCbs.delete(renderAll); prevCleanup?.(); };
 
       addBtn.addEventListener('click', async () => {
         if (window.showDirectoryPicker) {
           try {
+            await _exitFullscreen();
             const h = await window.showDirectoryPicker({ mode: 'read' });
             handles.push(h);
             if (multiKey) fileHandles.set(multiKey, handles);
@@ -1301,28 +1476,60 @@ export function initWM(onContentResize) {
      */
     channel(id) { return _getChannel(id); },
 
-    /** Register a factory fn that (re)creates a built-in window by id */
-    registerBuiltin(id, factory) { _builtinFactories.set(id, factory); },
+    /** Register a FileSystemDirectoryHandle under a key so browse(key) re-uses it */
+    registerFolder(key, handle) { fileHandles.set(key + '_multi', [handle]); },
+    registerFolderFallback(key, fallback) { fileHandles.set(key + '_fallback', fallback); },
 
-    /** Create (or recreate) a built-in window by id */
-    createBuiltin(id) { _builtinFactories.get(id)?.(); },
+    async pickFolder() {
+      if (window.showDirectoryPicker) {
+        try {
+          await _exitFullscreen();
+          const handle = await window.showDirectoryPicker({ mode: 'read' });
+          return { handle, name: handle.name };
+        } catch (err) {
+          if (err?.name === 'AbortError') return null;
+        }
+      }
+      const fallback = await _pickDirViaInput();
+      return fallback ? { fallback, name: fallback.name } : null;
+    },
 
-    /** Restore window state saved in localStorage (call after all built-in windows exist) */
+    /** Return the IndexedDB key for a file-backed window (key = winId) */
+    fileKey(id) { return fileHandles.has(id) ? id : null; },
+
+    /** Restore a file-backed window from IndexedDB (for project load) */
+    restoreFileWindow(s) { _restoreFileWindow(s); },
+
+    /** Force an immediate WM state save (call after removing windows from DOM) */
+    saveState() { clearTimeout(_savePending); _flushState(); },
+
+    /** Restore window state saved in localStorage */
     restoreState() {
       let state;
       try { state = JSON.parse(localStorage.getItem(_SAVE_KEY)); } catch (_) { return; }
       if (!state?.wins) return;
 
-      // Spawned windows first
       for (const s of state.wins) {
         if (!s.spawned) continue;
         if (s.hasHandle) {
-          // File-backed window — restore asynchronously via stored handle
           _restoreFileWindow(s);
           continue;
         }
+        // Window already exists (e.g. editor created from manifest) — restore geometry only
+        const existing = s.id ? document.getElementById(s.id) : null;
+        if (existing) {
+          existing.style.display = s.visible ? 'flex' : 'none';
+          existing.style.left   = `${s.x}px`;
+          existing.style.top    = `${s.y}px`;
+          existing.style.width  = `${s.w}px`;
+          existing.style.height = `${s.h}px`;
+          if (s.maximized)   _toggleMaximize(existing);
+          if (s.nochrome)    existing.classList.add('wm-no-chrome');
+          if (s.transparent) existing.classList.add('wm-transparent');
+          continue;
+        }
         const id = api.spawn(s.title, {
-          type: s.type, x: s.x, y: s.y, w: s.w, h: s.h,
+          id: s.id, type: s.type, x: s.x, y: s.y, w: s.w, h: s.h,
           html: s.html, src: s.src, loop: s.loop,
         });
         const win = document.getElementById(id);
@@ -1331,27 +1538,11 @@ export function initWM(onContentResize) {
         if (s.transparent) win.classList.add('wm-transparent');
       }
 
-      // Built-in window geometry
-      for (const s of state.wins) {
-        if (s.spawned) continue;
-        const win = document.getElementById(s.id);
-        if (!win) continue;
-        if (!s.visible) { win.style.display = 'none'; continue; }
-        win.style.display = 'flex';
-        win.style.left    = `${s.x}px`;
-        win.style.top     = `${s.y}px`;
-        win.style.width   = `${s.w}px`;
-        win.style.height  = `${s.h}px`;
-        if (s.maximized)   _toggleMaximize(win);
-        if (s.nochrome)    win.classList.add('wm-no-chrome');
-        if (s.transparent) win.classList.add('wm-transparent');
-      }
       onContentResize?.();
     },
 
-    LAYOUTS,
-    applyLayout,
   };
 
+  _updateHistoryBtns(); // init state — both disabled on load
   return api;
 }

@@ -1,3 +1,5 @@
+import { jsToWGSL } from './js-to-wgsl.js';
+
 const _shaders = [];
 
 export function cleanupShaders() {
@@ -68,10 +70,13 @@ const VIDEO_WGSL = /* wgsl */ `
 @group(0) @binding(2) var videoSampler: sampler;
 `;
 
-function wrapFragBody(body, hasVideo = false) {
+function wrapFragBody(body, hasVideo = false, helpers = []) {
+  const helperWGSL = helpers.length ? '\n' + helpers.join('\n\n') + '\n' : '';
+  const colLine = hasVideo ? '\n  let col    = textureSample(video, videoSampler, uv);' : '';
   return (
     UNIFORM_WGSL +
     (hasVideo ? VIDEO_WGSL : "") +
+    helperWGSL +
     /* wgsl */ `
 @fragment
 fn fs(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
@@ -80,19 +85,45 @@ fn fs(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
   let time   = u.time;
   let res    = u.res;
   let mouse  = u.mouse;
-  let custom = u.custom;
+  let custom = u.custom;${colLine}
   ${body}
 }`
   );
 }
 
+// ── Audio→shader helper (no audio.js import — duck types both Tone and Web Audio) ──
+
+function _readShaderFft(src, bins = 32) {
+  const node = src === 'mic' ? window.__ar_mic_analyser : src;
+  if (!node) return new Float32Array(bins);
+  const out = new Float32Array(bins);
+  if (typeof node.getValue === 'function') {
+    const raw = node.getValue();
+    const step = raw.length / bins;
+    for (let i = 0; i < bins; i++) {
+      const db = raw[Math.floor(i * step)];
+      out[i] = isFinite(db) ? Math.max(0, (db + 80) / 80) : 0;
+    }
+  } else if (node.frequencyBinCount) {
+    const data = new Uint8Array(node.frequencyBinCount);
+    node.getByteFrequencyData(data);
+    const step = data.length / bins;
+    for (let i = 0; i < bins; i++) out[i] = data[Math.floor(i * step)] / 255;
+  }
+  return out;
+}
+
 // ── Shader class ────────────────────────────────────────────────────────────
 
 export class Shader {
-  constructor(fragmentBodyOrWGSL, { z = 30, opacity = 1.0, video = null } = {}) {
-    this._fragSrc = fragmentBodyOrWGSL;
+  constructor(fragmentBodyOrWGSL, { z = 30, opacity = 1.0, video = null, container = null } = {}) {
+    // Accept a JS function — transpiled to WGSL at start() time (after video src is known)
+    this._fn      = typeof fragmentBodyOrWGSL === 'function' ? fragmentBodyOrWGSL : null;
+    this._fragSrc = this._fn ? null : fragmentBodyOrWGSL;
+    this._helpers = [];   // WGSL helper fn strings from jsToWGSL
     this._z = z;
     this._opacity = opacity;
+    this._container = container; // explicit mount target — bypasses fsContainer/canvasWrapper
     this._canvas = null;
     this._ctx = null;
     this._device = null;
@@ -102,6 +133,8 @@ export class Shader {
     this._rafId = null;
     this._startTime = null;
     this._custom = new Float32Array(4);
+    this._boundSignal   = null; // signal obj from audio.signal()
+    this._boundAnalyser = null; // raw Tone.Analyser / AnalyserNode / 'mic'
 
     // Video / texture source
     this._videoSrc = video;
@@ -137,38 +170,57 @@ export class Shader {
     if (!adapter) throw new Error("No WebGPU adapter available");
     this._device = await adapter.requestDevice();
 
-    // Create canvas overlaid on the scene — parented to fsContainer so it
-    // fills the full WM output window regardless of canvasWrapper's 16:9 constraint.
     this._canvas = document.createElement("canvas");
+    this._canvas._ar_webgpu = true; // tag so mirror copy loop can skip it
     const fsContainer = window.__ar_fsContainer ?? document.getElementById("fsContainer");
-    const wrapper = window.__ar_canvasWrapper ?? document.getElementById("canvasWrapper");
-    const parent = fsContainer ?? wrapper;
-    const ref = wrapper?.querySelector("canvas");
-    this._canvas.width = ref?.width ?? 1600;
-    this._canvas.height = ref?.height ?? 900;
+    const wrapper    = window.__ar_canvasWrapper ?? document.getElementById("canvasWrapper");
+    // container opt mounts shader inside an arbitrary element (e.g. a WM window body)
+    const parent     = this._container ?? fsContainer ?? wrapper;
+    const sizeRef    = this._container ?? wrapper ?? parent;
+    const refCanvas  = (this._container ?? wrapper)?.querySelector("canvas");
+    this._canvas.width  = refCanvas?.width  ?? 1600;
+    this._canvas.height = refCanvas?.height ?? 900;
     Object.assign(this._canvas.style, {
       position: "absolute",
-      top: "0",
-      left: "0",
-      width: "100%",
-      height: "100%",
+      top: "0", left: "0",
+      width: "100%", height: "100%",
       zIndex: String(this._z),
       opacity: String(this._opacity),
       pointerEvents: "none",
     });
+    if (this._container) {
+      // ensure body can contain absolutely-positioned children
+      const pos = getComputedStyle(this._container).position;
+      if (pos === 'static') this._container.style.position = 'relative';
+    }
+
+    // 2D readable shadow canvas — updated each frame within shader RAF so drawImage works.
+    // Mirror windows read from this instead of the WebGPU canvas (which is unreadable outside its own RAF).
+    this._readable = document.createElement("canvas");
+    this._readable._ar_shaderReadable = true; // mirror pings this flag to request blits
+    this._readable.width  = this._canvas.width;
+    this._readable.height = this._canvas.height;
+    Object.assign(this._readable.style, {
+      position: "absolute",
+      top: "0", left: "0",
+      width: "100%", height: "100%",
+      zIndex: String(this._z),
+      opacity: "0",
+      pointerEvents: "none",
+    });
+    parent?.appendChild(this._readable);
     parent?.appendChild(this._canvas);
 
-    // Observe canvasWrapper for dims — always 16:9, updates when WM window resizes.
     this._resizeObserver = new ResizeObserver(() => {
-      const ref = wrapper ?? parent;
-      const w = Math.round((ref?.clientWidth ?? 0) * devicePixelRatio) || 1600;
-      const h = Math.round((ref?.clientHeight ?? 0) * devicePixelRatio) || 900;
+      const w = Math.round((sizeRef?.clientWidth  ?? 0) * devicePixelRatio) || 1600;
+      const h = Math.round((sizeRef?.clientHeight ?? 0) * devicePixelRatio) || 900;
       if (this._canvas.width !== w || this._canvas.height !== h) {
-        this._canvas.width = w;
+        this._canvas.width  = w;
         this._canvas.height = h;
+        if (this._readable) { this._readable.width = w; this._readable.height = h; }
       }
     });
-    this._resizeObserver.observe(wrapper ?? parent);
+    this._resizeObserver.observe(sizeRef ?? parent);
 
     const format = navigator.gpu.getPreferredCanvasFormat();
     this._ctx = this._canvas.getContext("webgpu");
@@ -193,9 +245,23 @@ export class Shader {
   }
 
   async _compilePipeline() {
-    const isFullShader = /@(fragment|vertex|compute)/.test(this._fragSrc);
+    // JS function path — transpile to WGSL now (video src is known)
+    if (this._fn) {
+      try {
+        const result = jsToWGSL(this._fn);
+        this._fragSrc = result.body;
+        this._helpers = result.helpers;
+        // if fn uses 'col' param, ensure video binding is set up
+        if (result.usesCol && !this._videoSrc) {
+          console.warn('Shader: fn uses col (video sample) but no video: source was provided');
+        }
+      } catch (e) {
+        throw new Error(`Shader JS→WGSL: ${e.message}`);
+      }
+    }
+    const isFullShader = /@(fragment|vertex|compute)/.test(this._fragSrc ?? '');
     const hasVideo = !!this._videoSrc && !isFullShader;
-    const fragWGSL = isFullShader ? this._fragSrc : wrapFragBody(this._fragSrc, hasVideo);
+    const fragWGSL = isFullShader ? this._fragSrc : wrapFragBody(this._fragSrc, hasVideo, this._helpers);
     const wgsl = isFullShader ? fragWGSL : VERT_WGSL + "\n" + fragWGSL;
 
     this._device.pushErrorScope("validation");
@@ -290,16 +356,34 @@ export class Shader {
   // ── Uniforms ─────────────────────────────────────────────────────────────
 
   _writeUniforms(time) {
+    // Auto-fill custom[0..3] = [rms, bass, mid, high] if a signal is bound
+    if (this._boundSignal) {
+      const s = this._boundSignal;
+      this._custom[0] = s.value ?? 0;
+      this._custom[1] = s.bass  ?? 0;
+      this._custom[2] = s.mid   ?? 0;
+      this._custom[3] = s.high  ?? 0;
+    } else if (this._boundAnalyser) {
+      const bins = 32;
+      const fft  = _readShaderFft(this._boundAnalyser, bins);
+      const avg  = (s, e) => { let sum = 0; for (let i = s; i < e; i++) sum += fft[i]; return sum / (e - s) || 0; };
+      const e    = Math.floor(bins * 0.1), m = Math.floor(bins * 0.5);
+      this._custom[0] = avg(0, bins);
+      this._custom[1] = avg(0, e);
+      this._custom[2] = avg(e, m);
+      this._custom[3] = avg(m, bins);
+    }
+
     const c = this._canvas;
-    const m = window.__ar_shaderMouse ?? { x: 0, y: 0 };
+    const mo = window.__ar_shaderMouse ?? { x: 0, y: 0 };
     const data = new Float32Array(12);
     data[0] = c.width;
     data[1] = c.height;
-    data[2] = m.x / c.width;
-    data[3] = m.y / c.height;
+    data[2] = mo.x / c.width;
+    data[3] = mo.y / c.height;
     data[4] = time;
-    data[8] = this._custom[0];
-    data[9] = this._custom[1];
+    data[8]  = this._custom[0];
+    data[9]  = this._custom[1];
     data[10] = this._custom[2];
     data[11] = this._custom[3];
     this._device.queue.writeBuffer(this._uniformBuf, 0, data);
@@ -329,22 +413,35 @@ export class Shader {
     pass.draw(3);
     pass.end();
     this._device.queue.submit([encoder.finish()]);
+
+    // Blit to 2D readable canvas only when a mirror is watching (flag set by mirror RAF, auto-expires)
+    if (this._readable?._ar_watched) {
+      this._readable._ar_watched = false;
+      if (this._readable.width !== this._canvas.width || this._readable.height !== this._canvas.height) {
+        this._readable.width = this._canvas.width;
+        this._readable.height = this._canvas.height;
+      }
+      try { this._readable.getContext('2d').drawImage(this._canvas, 0, 0); } catch (_) {}
+    }
   }
 
   // ── Public API ──────────────────────────────────────────────────────────
 
   start() {
+    window.__ar_keepAlive = window.__ar_keepAlive ?? new Set();
+    window.__ar_keepAlive.add(this);
     (async () => {
       if (!this._device) await this._init();
       if (this._rafId) return;
-      window.__ar_keepAlive = window.__ar_keepAlive ?? new Set();
-      window.__ar_keepAlive.add(this);
       const loop = (ts) => {
-        this._frame(ts);
+        if (!window.__ar_paused) this._frame(ts);
         this._rafId = requestAnimationFrame(loop);
       };
       this._rafId = requestAnimationFrame(loop);
-    })().catch((e) => console.error("Shader error:", e.message));
+    })().catch((e) => {
+      console.error("Shader error:", e.message);
+      window.__ar_keepAlive?.delete(this);
+    });
     return this;
   }
 
@@ -372,6 +469,19 @@ export class Shader {
     return this;
   }
 
+  // Bind an audio source → auto-fills custom = [rms, bass, mid, high] every frame.
+  // source: audio.signal() obj | Tone.Analyser | Web Audio AnalyserNode | 'mic' | Tone node
+  bind(source) {
+    if (source && typeof source.bass !== 'undefined') {
+      this._boundSignal   = source;
+      this._boundAnalyser = null;
+    } else {
+      this._boundSignal   = null;
+      this._boundAnalyser = source;
+    }
+    return this;
+  }
+
   get canvas() { return this._canvas; }
 
   opacity(n) {
@@ -391,6 +501,8 @@ export class Shader {
     window.__ar_keepAlive?.delete(this);
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
+    this._readable?.remove();
+    this._readable = null;
     this._canvas?.remove();
     this._videoTex?.destroy();
     this._uniformBuf?.destroy();

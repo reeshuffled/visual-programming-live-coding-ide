@@ -56,6 +56,8 @@
       nav li.no-btn { background: transparent; box-shadow: none; cursor: default; }
       nav li.no-btn:hover { background: transparent; }
       nav li.no-btn:active { transform: none; box-shadow: none; }
+      nav li[disabled] { pointer-events: none; cursor: default; }
+      nav li[disabled]:active { transform: none; box-shadow: none; }
       nav li.sep {
         width: 1px; height: 20px;
         background: #ccc; padding: 0;
@@ -152,8 +154,7 @@
         flex-shrink: 0;
         border-bottom: 1px solid #c0c3c8;
         gap: 6px;
-        letter-spacing: 0.7px;
-        text-transform: uppercase;
+        letter-spacing: 0.3px;
       }
       .wm-title { flex: 1; }
       .wm-btn {
@@ -434,6 +435,42 @@
         border-top: 2px solid #1565c0;
       }
 
+      /* Desktop context menu */
+      .desktop-ctx-menu {
+        position: fixed; z-index: 99999;
+        background: #2b2b2b; border: 1px solid #555; border-radius: 6px;
+        padding: 4px 0; min-width: 170px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.5);
+        font-family: Arial, sans-serif; font-size: 13px;
+      }
+      .desktop-ctx-item {
+        padding: 7px 14px; color: #ddd; cursor: pointer;
+        display: flex; align-items: center; gap: 8px;
+      }
+      .desktop-ctx-item:hover { background: #3a3a3a; color: #fff; }
+      .desktop-ctx-item i { width: 14px; text-align: center; color: #aaa; }
+
+      /* Search panel */
+      .cm-search-panel {
+        position: absolute; top: 4px; right: 8px; z-index: 10;
+        display: flex; align-items: center; gap: 4px;
+        background: #2b2b2b; border: 1px solid #555; border-radius: 5px;
+        padding: 4px 6px; box-shadow: 0 2px 8px rgba(0,0,0,.5);
+      }
+      .cm-search-input {
+        background: #1e1e1e; color: #ccc; border: 1px solid #444; border-radius: 3px;
+        padding: 3px 6px; font-size: 13px; width: 160px; outline: none;
+      }
+      .cm-search-input:focus { border-color: #7ab8ff; }
+      .cm-search-count { color: #888; font-size: 12px; min-width: 60px; }
+      .cm-search-btn {
+        background: none; border: none; color: #aaa; cursor: pointer;
+        font-size: 14px; padding: 2px 5px; border-radius: 3px; line-height: 1;
+      }
+      .cm-search-btn:hover { background: #444; color: #fff; }
+      .cm-search-match { background: rgba(255,200,0,.25); border-radius: 2px; }
+      .cm-search-active { background: rgba(255,160,0,.6); border-radius: 2px; }
+
       /* Per-editor mode toggle */
       .ar-mode-toggle {
         display: inline-flex; align-items: center;
@@ -481,11 +518,16 @@
       }
       .ar-console-label {
         display: flex; align-items: center; justify-content: space-between;
-        padding: 2px 8px; font-size: 11px; font-weight: bold;
+        padding: 2px 4px 2px 8px; font-size: 11px; font-weight: bold;
         font-family: Arial, sans-serif; background: #eee;
         border-bottom: 1px solid #ccc; flex-shrink: 0;
       }
-      .ar-console-label a { color: #555; font-size: 10px; text-decoration: none; }
+      .ar-console-btns { display: flex; align-items: center; gap: 1px; }
+      .ar-console-btn {
+        background: none; border: none; cursor: pointer; color: #666;
+        padding: 3px 6px; border-radius: 3px; font-size: 11px; line-height: 1;
+      }
+      .ar-console-btn:hover { background: #ddd; color: #222; }
       .ar-console-output {
         flex: 1; overflow-y: scroll; background: white;
         box-sizing: border-box; padding: 8px 10px;
@@ -560,32 +602,38 @@
   </head>
 
   <body>
-    <div id="code_text" style="display: none">// Visual Live Coding IDE
-// Shader, Audio, Media, Vision
+    <div id="code_text" style="display: none">// Visual Live Coding IDE — press ? for API reference
+// Write shaders as plain JS — no GPU knowledge needed
 
-const s = new Shader(`
-  let col = vec3f(uv.x, uv.y, sin(time) * 0.5 + 0.5);
-  return vec4f(col, 1.0);
-`);
+const s = new Shader(({ uv, time }) => {
+  const r = Math.sin(uv.x * 10 + time) * 0.5 + 0.5;
+  const g = Math.cos(uv.y * 8  - time) * 0.5 + 0.5;
+  return [r, g, 0.5, 1.0];
+});
 s.start();</div>
 
     <!-- Menu -->
     <nav>
       <ul>
-        <li id="micToggle" style="display:none;"><i class="fa-solid fa-microphone-slash"></i></li>
-        <li id="cameraToggle" style="display:none;"><i class="fa-solid fa-video-slash"></i></li>
-        <li id="cameraWrapper" class="no-btn" style="display:none;">
-          Camera: <select id="cameraSelect"></select>
-        </li>
         <li class="sep"></li>
-        <li data-layout="split" title="Split layout (Ctrl+1)" class="active"><i class="fa-solid fa-table-columns"></i></li>
         <li id="newEditorBtn" title="New Editor"><i class="fa-solid fa-file-code"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
         <li id="newToolkitBtn" title="New Toolkit"><i class="fa-solid fa-toolbox"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
         <li id="filesBtn" title="File Browser"><i class="fa-solid fa-folder-open"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
         <li id="newVizBtn" title="New Visualizer"><i class="fa-solid fa-wave-square"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newMicVizBtn" title="New Mic Visualizer"><i class="fa-solid fa-microphone"></i><i class="fa-solid fa-chart-simple" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newCamVizBtn" title="New Camera Window"><i class="fa-solid fa-video"></i><i class="fa-solid fa-window-restore" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="helpBtn" title="API Quick Reference" style="margin-left:auto;"><i class="fa-solid fa-circle-question"></i></li>
+        <li id="micToggle" style="display:none;"><i class="fa-solid fa-microphone-slash"></i></li>
+        <li id="newMicVizBtn" title="New Mic Visualizer" style="display:none;"><i class="fa-solid fa-microphone"></i><i class="fa-solid fa-chart-simple" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="cameraToggle" style="display:none;"><i class="fa-solid fa-video-slash"></i></li>
+        <li id="cameraWrapper" class="no-btn" style="display:none;">
+          Camera: <select id="cameraSelect"></select>
+        </li>
+        <li id="newCamVizBtn" title="New Camera Window" style="display:none;"><i class="fa-solid fa-video"></i><i class="fa-solid fa-window-restore" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="saveProjectBtn" title="Export project" style="margin-left:auto;"><i class="fa-solid fa-download"></i></li>
+        <li id="loadProjectBtn" title="Import project"><i class="fa-solid fa-upload"></i></li>
+        <li id="undoWinBtn" title="Undo last window action" style="opacity:0.4"><i class="fa-solid fa-rotate-left"></i></li>
+        <li id="redoWinBtn" title="Redo last window action" style="opacity:0.4"><i class="fa-solid fa-rotate-right"></i></li>
+
+        <li id="closeAllWinsBtn" title="Close all windows"><i class="fa-solid fa-rectangle-xmark"></i></li>
+        <li id="helpBtn" title="API Quick Reference"><i class="fa-solid fa-circle-question"></i></li>
         <li id="fullscreenBtn" title="Fullscreen (F11)"><i class="fa-solid fa-expand"></i></li>
       </ul>
     </nav>
@@ -669,12 +717,152 @@ s.start();</div>
           <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.volume(-6)</td><td style="padding:3px 0; color:#ccc;">Master output volume in dB</td></tr>
         </table>
 
-        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Audio → Visual (non-visualizer)</h3>
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Audio Signal Bus</h3>
+        <div style="font-size:12px; color:#bbb; line-height:1.7; margin-bottom:10px;">
+          <p style="margin:0 0 8px;">Any audio source — synth, pattern, mic, effect chain — can be treated as a live signal that drives shaders, draw calls, window properties, or anything else. Three abstractions, one idea: <strong style="color:#e0e0e0;">audio is a data bus, not just sound.</strong></p>
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:6px;">
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.signal(source)</td><td style="padding:3px 0; color:#ccc;">Live <code style="background:#222;padding:1px 3px;border-radius:2px;">{value, bass, mid, high, fft}</code> object — read any getter each frame, no setup loop needed</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.fftCanvas(source, bins)</td><td style="padding:3px 0; color:#ccc;">Live <code style="background:#222;padding:1px 3px;border-radius:2px;">bins×1</code> canvas, R channel = FFT magnitude 0–1 — feed directly into any Shader as <code style="background:#222;padding:1px 3px;border-radius:2px;">video:</code></td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">shader.bind(source)</td><td style="padding:3px 0; color:#ccc;">Auto-fills <code style="background:#222;padding:1px 3px;border-radius:2px;">custom = [rms, bass, mid, high]</code> every frame — chainable with <code style="background:#222;padding:1px 3px;border-radius:2px;">.start()</code></td></tr>
+        </table>
+        <div style="font-size:12px; color:#bbb; line-height:1.7; margin-bottom:4px;">
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">source</strong> accepts: any Tone instrument/node, <code style="background:#222;padding:1px 4px;border-radius:2px;">Tone.Analyser</code>, Web Audio <code style="background:#222;padding:1px 4px;border-radius:2px;">AnalyserNode</code>, or <code style="background:#222;padding:1px 4px;border-radius:2px;">'mic'</code> (harness mic — enable with toolbar toggle).</p>
+        </div>
+        <div style="background:#0d1a2e; border:1px solid #1e3a5f; border-radius:5px; padding:10px 14px; margin:8px 0; font-size:11.5px;">
+          <div style="color:#7ab8ff; font-weight:bold; margin-bottom:6px; font-size:11px; letter-spacing:0.5px;">SIGNAL CHAINS</div>
+          <div style="color:#aaa; font-family:monospace; line-height:2;">
+            synth <span style="color:#555;">→</span> <span style="color:#88ccff;">audio.signal()</span> <span style="color:#555;">→</span> <span style="color:#88ccff;">.stream(s =&gt; draw.circle(…, s.bass * 300))</span> — RAF push, no loop<br>
+            synth <span style="color:#555;">→</span> <span style="color:#88ccff;">shader.bind(sig)</span> <span style="color:#555;">→</span> custom.x=rms, .y=bass, .z=mid, .w=high in WGSL<br>
+            synth <span style="color:#555;">→</span> <span style="color:#88ccff;">audio.fftCanvas()</span> <span style="color:#555;">→</span> Shader({ video: fftTex }) <span style="color:#555;">→</span> textureSample by uv.x<br>
+            <span style="color:#88ccff;">'mic'</span> <span style="color:#555;">→</span> any of the above — full spectrum from microphone<br>
+            viz.canvas <span style="color:#555;">→</span> Shader({ video: viz.canvas }) <span style="color:#555;">→</span> viz.shader(fn) <span style="color:#555;">→</span> chained post-processing
+          </div>
+        </div>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Video Signal Bus</h3>
+        <div style="font-size:12px; color:#bbb; line-height:1.7; margin-bottom:10px;">
+          <p style="margin:0 0 8px;">The inverse of the audio signal bus — sample any canvas or camera feed as a live signal to drive audio params, effects, or anything numeric. <strong style="color:#e0e0e0;">Camera, viz canvas, layer canvas</strong> — all valid sources.</p>
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:6px;">
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">video.signal(source, opts)</td><td style="padding:3px 0; color:#ccc;">Live <code style="background:#222;padding:1px 3px;border-radius:2px;">{brightness, r, g, b, motion, hue}</code> — all lazy getters, sampled at <code style="background:#222;padding:1px 3px;border-radius:2px;">fps</code> (default 30)</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">sig.brightness</td><td style="padding:3px 0; color:#ccc;">Luminance 0–1 of sampled region (perceptual: 0.299r + 0.587g + 0.114b)</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">sig.motion</td><td style="padding:3px 0; color:#ccc;">Frame-delta RMS 0–1 — how much changed since last sample. Cheap motion detection, no Vision API needed</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">sig.hue</td><td style="padding:3px 0; color:#ccc;">Dominant hue 0–360 — map to scale degree, filter cutoff, palette index</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">sig.r / .g / .b</td><td style="padding:3px 0; color:#ccc;">Raw color channels 0–1 — drive independent synth voices, effect amounts</td></tr>
+        </table>
+        <div style="font-size:12px; color:#bbb; margin-bottom:4px;">
+          <strong style="color:#e0e0e0;">opts:</strong> <code style="background:#222;padding:1px 4px;border-radius:2px;">x, y</code> = normalized center of sample region (0–1), <code style="background:#222;padding:1px 4px;border-radius:2px;">radius</code> = region size (0–1), <code style="background:#222;padding:1px 4px;border-radius:2px;">fps</code> = sample rate.<br>
+          <strong style="color:#e0e0e0;">source:</strong> <code style="background:#222;padding:1px 4px;border-radius:2px;">'camera'</code> (toolbar camera), any <code style="background:#222;padding:1px 4px;border-radius:2px;">HTMLCanvasElement</code> (getCanvas(0), viz.canvas, mirror canvas).<br>
+          Pass an existing <code style="background:#222;padding:1px 4px;border-radius:2px;">video.signal()</code> object as source to <code style="background:#222;padding:1px 4px;border-radius:2px;">onMotion</code>/<code style="background:#222;padding:1px 4px;border-radius:2px;">onBrightness</code> to share one sampling loop across multiple triggers.
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:12px; margin:6px 0;">
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">video.onMotion(src, thr, onEnter, onExit?)</td><td style="padding:3px 0; color:#ccc;">Edge-triggered when motion crosses threshold — fires once on enter, once on exit</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">video.onBrightness(src, thr, onEnter, onExit?)</td><td style="padding:3px 0; color:#ccc;">Edge-triggered on brightness threshold — like <code style="background:#222;padding:1px 3px;border-radius:2px;">audio.onLevel</code> but for camera/canvas</td></tr>
+        </table>
+        <div style="background:#0d1a2e; border:1px solid #1e3a5f; border-radius:5px; padding:10px 14px; margin:8px 0; font-size:11.5px;">
+          <div style="color:#7ab8ff; font-weight:bold; margin-bottom:6px; font-size:11px; letter-spacing:0.5px;">SIGNAL CHAINS</div>
+          <div style="color:#aaa; font-family:monospace; line-height:2;">
+            <span style="color:#88ccff;">'camera'</span> <span style="color:#555;">→</span> sig.brightness <span style="color:#555;">→</span> synth._.frequency.value = sig.brightness * 880<br>
+            <span style="color:#88ccff;">'camera'</span> <span style="color:#555;">→</span> sig.motion <span style="color:#555;">→</span> kick.play() when motion &gt; 0.15<br>
+            <span style="color:#88ccff;">'camera'</span> <span style="color:#555;">→</span> sig.hue / 360 * scale.length <span style="color:#555;">→</span> scale degree <span style="color:#555;">→</span> note<br>
+            <span style="color:#88ccff;">getCanvas(0)</span> <span style="color:#555;">→</span> sig.brightness <span style="color:#555;">→</span> reverb.decay / filter.frequency<br>
+            <span style="color:#88ccff;">viz.canvas</span> <span style="color:#555;">→</span> sample different x regions for per-frequency-band triggers
+          </div>
+        </div>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Sensor Signal Bus</h3>
+        <p style="margin:0 0 8px; color:#bbb; font-size:12px;">Every sensor returns a signal object: live getters you can read any frame + <code style="background:#222;padding:1px 4px;border-radius:2px;">.stream(fn)</code> RAF push + edge triggers. All streams auto-cancel on reset.</p>
+        <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:10px;">
+          <tr style="color:#7ab8ff;"><th style="text-align:left;padding:3px 8px 3px 0;font-weight:normal;">API</th><th style="text-align:left;padding:3px 8px 3px 0;font-weight:normal;">Signal fields</th><th style="text-align:left;padding:3px 0;font-weight:normal;">Triggers</th></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;white-space:nowrap;"><code style="background:#222;padding:1px 4px;border-radius:2px;">sensors.mouse()</code></td><td style="padding:2px 8px 2px 0;">x, y, vx, vy, speed, left, right, middle</td><td>.onMove(thresh, fn) .onButton(btn, fn)</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;white-space:nowrap;"><code style="background:#222;padding:1px 4px;border-radius:2px;">sensors.keyboard()</code></td><td style="padding:2px 8px 2px 0;">held (Set), last, is(key), any(...keys)</td><td>.onKey(key, onDown, onUp?)</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;white-space:nowrap;"><code style="background:#222;padding:1px 4px;border-radius:2px;">sensors.gamepad(i)</code></td><td style="padding:2px 8px 2px 0;">connected, axis(i), button(i), pressed(i)</td><td>.onButton(i, fn) .onAxis(i, thresh, fn)</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;white-space:nowrap;"><code style="background:#222;padding:1px 4px;border-radius:2px;">sensors.motion()</code></td><td style="padding:2px 8px 2px 0;">ax/ay/az (m/s²), gx/gy/gz (°/s), alpha/beta/gamma (°)</td><td>.onShake(thresh, fn) .onTilt(axis, thresh, fn)</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;white-space:nowrap;"><code style="background:#222;padding:1px 4px;border-radius:2px;">sensors.geo()</code></td><td style="padding:2px 8px 2px 0;">lat, lon, altitude, accuracy, speed, heading</td><td>.stream(fn) (fires once ready)</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;white-space:nowrap;"><code style="background:#222;padding:1px 4px;border-radius:2px;">sensors.network()</code></td><td style="padding:2px 8px 2px 0;">online, type, downlink (Mbps), rtt (ms)</td><td>.onChange(fn)</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;white-space:nowrap;"><code style="background:#222;padding:1px 4px;border-radius:2px;">await sensors.battery()</code></td><td style="padding:2px 8px 2px 0;">level (0–1), charging, timeToEmpty (s)</td><td>.onChange(fn)</td></tr>
+        </table>
+        <div style="background:#111; border-radius:5px; padding:10px 14px; font-family:monospace; font-size:11px; color:#ccc; line-height:1.6; margin-bottom:8px;">
+          <span style="color:#888;">// Mouse → shader custom uniform</span><br>
+          const ms = sensors.mouse();<br>
+          const s = new Shader((<span style="color:#7ab8ff;">{ uv, custom }</span>) =&gt; {<br>
+          &nbsp;&nbsp;const d = length(uv - vec2(custom.x, custom.y));<br>
+          &nbsp;&nbsp;return [1.0 - smoothstep(0.0, 0.1, d), uv.y, uv.x, 1.0];<br>
+          });<br>
+          ms.stream(m =&gt; s.set([m.x, m.y, 0, 0])); s.start();<br><br>
+          <span style="color:#888;">// Gamepad left stick → draw</span><br>
+          sensors.gamepad(0).stream(g =&gt; {<br>
+          &nbsp;&nbsp;draw.circle(400 + g.axis(0) * 200, 225 + g.axis(1) * 200, 20, 'white');<br>
+          });<br><br>
+          <span style="color:#888;">// Device tilt → camera shader (mobile)</span><br>
+          const mot = sensors.motion();<br>
+          const s2 = new Shader((<span style="color:#7ab8ff;">{ uv, col, custom }</span>) =&gt; {<br>
+          &nbsp;&nbsp;const shift = vec2(custom.x * 0.05, custom.y * 0.05);<br>
+          &nbsp;&nbsp;return [col.r, col.g, col.b, 1.0]; <span style="color:#888;">// shift uv by tilt</span><br>
+          }, { video: cam });<br>
+          mot.stream(m =&gt; s2.set([m.gamma / 90, m.beta / 180, 0, 0])); s2.start();<br><br>
+          <span style="color:#888;">// iOS motion permission (call from button click)</span><br>
+          btn.onclick = async () =&gt; { const mot = await sensors.requestMotion(); }
+        </div>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">WebGPU Shaders</h3>
+        <p style="margin:0 0 8px; color:#bbb; font-size:12px;">Write shaders as plain JavaScript — no WGSL, no GPU knowledge required. Pass an arrow function to <code style="background:#222;padding:1px 4px;border-radius:2px;">new Shader(fn)</code> and the IDE compiles it to WebGPU automatically.</p>
+        <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:10px;">
+          <tr style="color:#7ab8ff;"><th style="text-align:left;padding:3px 8px 3px 0;font-weight:normal;">Param</th><th style="text-align:left;padding:3px 8px 3px 0;font-weight:normal;">Type</th><th style="text-align:left;padding:3px 0;font-weight:normal;">Description</th></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;"><code style="background:#222;padding:1px 4px;border-radius:2px;">uv</code></td><td style="padding:2px 8px 2px 0;color:#aaa;">vec2</td><td>Normalised pixel coord 0–1 (x right, y down)</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;"><code style="background:#222;padding:1px 4px;border-radius:2px;">time</code></td><td style="padding:2px 8px 2px 0;color:#aaa;">f32</td><td>Seconds since shader started</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;"><code style="background:#222;padding:1px 4px;border-radius:2px;">col</code></td><td style="padding:2px 8px 2px 0;color:#aaa;">vec4</td><td>Video/camera pixel at current uv — needs <code style="background:#222;padding:1px 4px;border-radius:2px;">{ video: src }</code> opt</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;"><code style="background:#222;padding:1px 4px;border-radius:2px;">custom</code></td><td style="padding:2px 8px 2px 0;color:#aaa;">vec4</td><td>x/y/z/w — filled by <code style="background:#222;padding:1px 4px;border-radius:2px;">.bind(audio.signal(...))</code> or <code style="background:#222;padding:1px 4px;border-radius:2px;">.set([…])</code></td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;"><code style="background:#222;padding:1px 4px;border-radius:2px;">res</code></td><td style="padding:2px 8px 2px 0;color:#aaa;">vec2</td><td>Canvas resolution in pixels</td></tr>
+          <tr style="color:#bbb;"><td style="padding:2px 8px 2px 0;"><code style="background:#222;padding:1px 4px;border-radius:2px;">mouse</code></td><td style="padding:2px 8px 2px 0;color:#aaa;">vec2</td><td>Mouse position normalised 0–1</td></tr>
+        </table>
+        <div style="font-size:12px; color:#bbb; line-height:1.7; margin-bottom:8px;">
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">return [r, g, b, a]</strong> — use an array literal; automatically becomes <code style="background:#222;padding:1px 4px;border-radius:2px;">vec4f</code>.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Math.*</strong> → all map to WGSL equivalents: <code style="background:#222;padding:1px 4px;border-radius:2px;">Math.sin</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">Math.abs</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">Math.pow</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">Math.floor</code>, etc.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">vec2(x,y) / vec3(r,g,b) / vec4(r,g,b,a)</strong> — vector constructors available globally.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">WGSL built-ins available as-is:</strong> <code style="background:#222;padding:1px 4px;border-radius:2px;">mix</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">clamp</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">smoothstep</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">step</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">fract</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">length</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">normalize</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">dot</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">cross</code>, <code style="background:#222;padding:1px 4px;border-radius:2px;">reflect</code>.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Ternary</strong> <code style="background:#222;padding:1px 4px;border-radius:2px;">cond ? a : b</code> — works; compiles to WGSL <code style="background:#222;padding:1px 4px;border-radius:2px;">select(b, a, cond)</code>.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">if / else, for, while</strong> — all supported.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Helper functions</strong> — declare inside the arrow fn body; hoisted to WGSL. Type params with default values: <code style="background:#222;padding:1px 4px;border-radius:2px;">r = 0.0</code> → f32, <code style="background:#222;padding:1px 4px;border-radius:2px;">center = vec2(0,0)</code> → vec2f.</p>
+        </div>
+        <div style="background:#111; border-radius:5px; padding:10px 14px; font-family:monospace; font-size:11px; color:#ccc; line-height:1.6; margin-bottom:8px;">
+          <span style="color:#888;">// Generative — no video needed</span><br>
+          new Shader((<span style="color:#7ab8ff;">{ uv, time }</span>) =&gt; {<br>
+          &nbsp;&nbsp;const r = Math.sin(uv.x * 10 + time) * 0.5 + 0.5;<br>
+          &nbsp;&nbsp;return [r, uv.y, 0.5, 1.0];<br>
+          }).start();<br><br>
+          <span style="color:#888;">// Camera filter — col = pixel at current uv</span><br>
+          new Shader((<span style="color:#7ab8ff;">{ uv, col, time }</span>) =&gt; {<br>
+          &nbsp;&nbsp;const grey = col.r * 0.299 + col.g * 0.587 + col.b * 0.114;<br>
+          &nbsp;&nbsp;return [grey, grey * Math.abs(Math.sin(time)), grey, 1.0];<br>
+          }, { <span style="color:#7ab8ff;">video: cam</span> }).start();<br><br>
+          <span style="color:#888;">// Audio-reactive — .bind() fills custom.x=rms, .y=bass, .z=mid, .w=high</span><br>
+          const s = new Shader((<span style="color:#7ab8ff;">{ uv, time, custom }</span>) =&gt; {<br>
+          &nbsp;&nbsp;const r = Math.sin(uv.x * 20 * (1.0 + custom.x * 5.0) + time) * 0.5 + 0.5;<br>
+          &nbsp;&nbsp;return [r * custom.x, r * 0.3, 1.0 - r, 1.0];<br>
+          });<br>
+          s.bind(audio.signal(synth)).start();<br><br>
+          <span style="color:#888;">// Helper function — default values are type hints</span><br>
+          new Shader((<span style="color:#7ab8ff;">{ uv, time }</span>) =&gt; {<br>
+          &nbsp;&nbsp;function circle(<span style="color:#aaffaa;">center = vec2(0,0), p = vec2(0,0), r = 0.0</span>) {<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;return 1.0 - smoothstep(r - 0.01, r + 0.01, length(p - center));<br>
+          &nbsp;&nbsp;}<br>
+          &nbsp;&nbsp;const c = circle(vec2(0.5, 0.5), uv, 0.25 + Math.sin(time) * 0.1);<br>
+          &nbsp;&nbsp;return [c, c * 0.4, c * 0.9, 1.0];<br>
+          }).start();<br><br>
+          <span style="color:#888;">// Apply shader directly to any window</span><br>
+          wm.applyShader(<span style="color:#7ab8ff;">'win-camera'</span>, (<span style="color:#7ab8ff;">{ uv, col, time }</span>) =&gt; {<br>
+          &nbsp;&nbsp;return [1.0 - col.r, 1.0 - col.g, 1.0 - col.b, 1.0];<br>
+          });
+        </div>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Audio → Visual (patterns &amp; timing)</h3>
         <div style="font-size:12px; color:#bbb; line-height:1.7;">
           <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Beat as state machine:</strong> Each pat() callback fires at precise musical times — use it to advance a CA, flip a palette, emit a particle burst. Audio is the clock, not the picture.</p>
-          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Amplitude as physics force:</strong> <code style="background:#222;padding:1px 4px;border-radius:2px;">meter.getValue()</code> → dB → convert with <code style="background:#222;padding:1px 4px;border-radius:2px;">Math.pow(10, db/20)</code> → feed to gravity, repulsion, blur strength, shader uniform.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Amplitude as physics force:</strong> <code style="background:#222;padding:1px 4px;border-radius:2px;">sig.value</code> or <code style="background:#222;padding:1px 4px;border-radius:2px;">sig.bass</code> → feed to gravity, repulsion, blur strength, shader uniform. Read any frame with no setup.</p>
           <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Note value as index:</strong> The <code style="background:#222;padding:1px 4px;border-radius:2px;">note</code> string in a callback can select palette index, drawing mode, CA rule — anything discrete.</p>
-          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Shared parameter:</strong> The same variable that drives synth detune can drive visual distortion magnitude — change one number, both domains shift.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Shared parameter:</strong> The same variable that drives synth detune can drive visual distortion — change one number, both domains shift.</p>
         </div>
 
         <p style="margin:20px 0 0; color:#555; font-size:11px; text-align:right;">Press <kbd style="background:#333;padding:2px 5px;border-radius:3px;border:1px solid #555;">?</kbd> or <kbd style="background:#333;padding:2px 5px;border-radius:3px;border:1px solid #555;">Esc</kbd> to close</p>

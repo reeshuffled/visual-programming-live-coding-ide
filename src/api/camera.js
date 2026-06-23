@@ -118,35 +118,18 @@ export function initCamera() {
       .catch((err) => console.warn("Camera unavailable:", err.message));
   };
 
-  let cameraWinPositioned = false;
-
   document.getElementById("cameraToggle").addEventListener("click", () => {
     cameraOn = !cameraOn;
     window.__ar_camera_on = cameraOn;
     const toggle = document.getElementById("cameraToggle");
     toggle.innerHTML = cameraOn ? '<i class="fa-solid fa-video"></i>' : '<i class="fa-solid fa-video-slash"></i>';
     toggle.classList.toggle("active", cameraOn);
-    const cameraWin = document.getElementById("win-camera");
     if (cameraOn) {
-      if (cameraWin) {
-        if (!cameraWinPositioned) {
-          const desk = document.getElementById("desktop");
-          const dw = desk.offsetWidth, dh = desk.offsetHeight;
-          cameraWin.style.left = `${Math.round(dw * 0.7)}px`;
-          cameraWin.style.top  = "8px";
-          cameraWin.style.width  = `${Math.round(dw * 0.28)}px`;
-          cameraWin.style.height = `${Math.round(dh * 0.40)}px`;
-          cameraWinPositioned = true;
-        }
-        cameraWin.style.zIndex = "500";
-        cameraWin.style.display = "flex";
-      }
       if (!rafId) drawFrame();
     } else {
       cancelAnimationFrame(rafId);
       rafId = null;
       cameraCtx.clearRect(0, 0, cameraCanvas.width, cameraCanvas.height);
-      if (cameraWin) cameraWin.style.display = "none";
     }
   });
 

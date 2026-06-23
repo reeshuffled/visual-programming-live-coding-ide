@@ -203,6 +203,26 @@ export const TOOLKIT_CATEGORIES = [
         hint: "Apply a shader effect to an IDE window. Windows: 'editor', 'console', 'canvas'. Effects: greyscale, invert, channel_swap, posterize, scanlines",
       },
       {
+        label: "shader — JS function",
+        code: "// Write shaders as plain JS — no WGSL needed.\n// Params: { uv, time, custom, res, mouse } — destructure what you need.\n// vec2/vec3/vec4 constructors available. Math.sin/cos/abs/etc. → WGSL built-ins.\n// return [r, g, b, a]  →  vec4f automatically\nconst s = new Shader(({ uv, time }) => {\n  const r = Math.sin(uv.x * 10 + time) * 0.5 + 0.5;\n  const g = Math.cos(uv.y * 8  - time) * 0.5 + 0.5;\n  return [r, g, 0.5, 1.0];\n});\ns.start();",
+        hint: "new Shader(fn) — pass a JS arrow function instead of WGSL. Transpiled automatically. Supports: let/const, if/else, for/while, Math.*, vec2/3/4, ternary, helper functions (type from default params). return [r,g,b,a] → vec4f.",
+      },
+      {
+        label: "shader JS + video",
+        code: "// col = video sample at current uv (vec4f with .r .g .b .a)\nconst cam = new Camera();\nawait cam.open();\nconst s = new Shader(({ uv, time, col }) => {\n  const grey = col.r * 0.299 + col.g * 0.587 + col.b * 0.114;\n  return [grey, grey * Math.abs(Math.sin(time)), grey * 0.5, 1.0];\n}, { video: cam });\ns.start();",
+        hint: "Destructure col to get the video/camera pixel at current uv. Pass video: in opts — any HTMLVideoElement, HTMLCanvasElement, or Camera instance.",
+      },
+      {
+        label: "shader JS + helper fns",
+        code: "// Define helper functions — type params with default values as hints:\n//   r = 0.0 → f32,   c = vec2(0,0) → vec2f\nconst s = new Shader(({ uv, time }) => {\n  function circle(center = vec2(0, 0), p = vec2(0, 0), r = 0.0) {\n    return 1.0 - smoothstep(r - 0.01, r + 0.01, length(p - center));\n  }\n  const c = circle(vec2(0.5, 0.5), uv, 0.25 + Math.sin(time) * 0.1);\n  return [c, c * 0.4, c * 0.9, 1.0];\n});\ns.start();",
+        hint: "Inner function declarations become WGSL helper fns. Type each param with a default value: f32 params use 0.0, vec2f use vec2(0,0), vec3f use vec3(0,0,0), etc.",
+      },
+      {
+        label: "shader JS + audio reactive",
+        code: "// custom.x/y/z/w filled by .bind(signal)\nconst sig = audio.signal(audio.master);\nconst s = new Shader(({ uv, time, custom }) => {\n  const bass = custom.x;      // 0–1 RMS of bound signal\n  const r = Math.sin(uv.x * 20 * (1.0 + bass * 5.0) + time) * 0.5 + 0.5;\n  return [r * bass, r * 0.3, 1.0 - r, 1.0];\n});\ns.bind(sig);\ns.start();",
+        hint: "Call .bind(audio.signal(...)) — fills custom.x=rms, custom.y=bass, custom.z=mid, custom.w=high each frame. Use custom.x/y/z/w in the JS shader fn.",
+      },
+      {
         label: "capture window shader",
         code: "const s = new Shader(`\n  let col = textureSample(video, videoSampler, uv);\n  return vec4f(col.rgb, 1.0);\n`, { video: captureWindow('.CodeMirror') });\ns.start();",
         hint: "Capture any DOM element as a live shader texture — pass a CSS selector or element. canvas/video elements pass through directly.",
@@ -546,6 +566,31 @@ audio.start();`,
         code: "const synth = audio.fm();\nconst viz = audio.viz(synth, { mode: 'ring', bins: 128 }).start();\n\n// Named presets: thermal, cool, rainbow, mono, neon\nviz.shader('rainbow');\n\nsetInterval(() => synth.play('C3', '2n'), 2000);",
         hint: "viz.shader('preset') — built-in palettes: thermal, cool, rainbow, mono, neon. AudioViz.presets lists all names.",
       },
+      {
+        label: "audio.signal → shader bind",
+        code: "const synth = audio.fm();\nconst sig = audio.signal(synth);\n// sig.value=overall rms  sig.bass/mid/high=band averages  sig.fft=Float32Array\n\nconst s = new Shader(`\n  let amp = custom.x;  // rms\n  let bass = custom.y;\n  let mid  = custom.z;\n  let high = custom.w;\n  return vec4f(bass, mid * 0.5, high * 2.0, 1.0);\n`).bind(sig).start();\n\nsetInterval(() => synth.play('C3', '4n'), 500);\naudio.start();",
+        hint: "audio.signal(source) → live {value, bass, mid, high, fft} object. shader.bind(sig) auto-fills custom=[rms,bass,mid,high] every frame. source can be any Tone node, Tone.Analyser, Web Audio AnalyserNode, or 'mic'.",
+      },
+      {
+        label: "audio.signal → stream (RAF push)",
+        code: "const synth = audio.fm();\nconst sig = audio.signal(synth);\n\n// .stream() fires fn every frame — no setInterval needed\nsig.stream(s => {\n  draw.clear();\n  draw.circle(800, 450, s.bass * 400, `hsl(${s.high * 360}, 80%, 50%)`);\n  draw.rect(0, 450 - s.mid * 200, 1600, 4, 'cyan');\n});\n\nsetInterval(() => synth.play('C3', '4n'), 500);\naudio.start();",
+        hint: "sig.stream(fn) — RAF-driven push, fn(sig) called every frame. Cleaned up automatically on stop. No polling loop needed. Chainable: audio.signal(src).stream(fn).",
+      },
+      {
+        label: "audio.signal → mic bind",
+        code: "// Make sure mic toggle is on in the toolbar\nconst sig = audio.signal('mic');\n\nconst s = new Shader(`\n  let amp = custom.x; // mic rms\n  let r = sin(uv.x * 10.0 + time) * amp;\n  return vec4f(amp, r, custom.z, 1.0);\n`).bind(sig).start();",
+        hint: "Pass 'mic' as source to audio.signal() or audio.fftCanvas() — reads from the harness mic analyser. Enable mic with the toolbar toggle first.",
+      },
+      {
+        label: "audio.fftCanvas → shader texture",
+        code: "const synth = audio.pluck();\n// fftCanvas: bins×1 canvas, R channel = FFT magnitude 0-1\n// uv.x in shader addresses frequency (0=bass, 1=treble)\nconst fftTex = audio.fftCanvas(synth, 256);\n\nconst s = new Shader(`\n  let amp = textureSample(video, videoSampler, vec2f(uv.x, 0.5)).r;\n  return vec4f(amp * 2.0, amp * uv.y, 1.0 - amp, 1.0);\n`, { video: fftTex }).start();\n\nconst notes = ['C3','E3','G3','B3','C4'];\nsetInterval(() => synth.play(notes[Math.floor(Math.random()*notes.length)], '8n'), 300);\naudio.start();",
+        hint: "audio.fftCanvas(source, bins) returns a live bins×1 canvas. Feed it as video: to any Shader. Sample with uv.x (0=bass, 1=treble). Source can be Tone node, 'mic', or Tone.Analyser.",
+      },
+      {
+        label: "audio.fftCanvas → mic texture",
+        code: "// Make sure mic toggle is on\nconst fftTex = audio.fftCanvas('mic', 256);\n\nconst s = new Shader(`\n  let amp = textureSample(video, videoSampler, vec2f(uv.x, 0.5)).r;\n  let glow = amp * amp * 3.0;\n  return vec4f(glow, glow * 0.3, glow * 0.1, 1.0);\n`, { video: fftTex }).start();",
+        hint: "audio.fftCanvas('mic') reads the harness mic analyser directly into a texture — full spectrum, no Tone nodes needed.",
+      },
     ],
   },
   {
@@ -846,6 +891,41 @@ audio.start();`,
         code: "// List available voices:\nconsole.log(audio.voices());\n\naudio.say('hello', { voice: 'Samantha', rate: 0.8, pitch: 1.2, volume: 1 });",
         hint: "audio.voices() → array of voice name strings. Pass a name as opts.voice to audio.say().",
       },
+      {
+        label: "video signal — camera",
+        code: "// Enable camera in toolbar first\nconst sig = video.signal('camera', { x: 0.5, y: 0.5, radius: 0.1 });\n// sig.brightness 0–1 luminance  sig.r / .g / .b  sig.motion 0–1  sig.hue 0–360\n\n// .stream() — RAF push, no polling needed\nsig.stream(s => {\n  draw.clear();\n  draw.circle(800, 450, s.brightness * 400, `hsl(${s.hue}, 80%, 50%)`);\n});\n\naudio.start();",
+        hint: "video.signal(source, opts) → live {brightness, r, g, b, motion, hue}. sig.stream(fn) fires fn every frame — no setInterval needed, cleaned up on stop.",
+      },
+      {
+        label: "video signal — motion trigger",
+        code: "// Enable camera in toolbar first\nconst sig = video.signal('camera', { x: 0.5, y: 0.5, radius: 0.3 });\nconst kick = audio.kick();\n\nlet wasStill = true;\nsetInterval(() => {\n  if (sig.motion > 0.15 && wasStill) {\n    kick.play('C1', '8n');\n    wasStill = false;\n  } else if (sig.motion < 0.05) {\n    wasStill = true;\n  }\n}, 33);\naudio.start();",
+        hint: "sig.motion = RMS pixel diff between frames (0–1). Cheap motion detection without Vision API — wave hand to trigger.",
+      },
+      {
+        label: "video signal → shader",
+        code: "// Enable camera in toolbar first\nconst sig = video.signal('camera');\n\nconst s = new Shader(`\n  let bright = custom.x;  // camera brightness\n  let motion = custom.y;  // motion intensity\n  let hue    = custom.z;  // dominant hue 0–1\n  return vec4f(motion * 2.0, bright, hue, 1.0);\n`);\n\nsetInterval(() => s.set([sig.brightness, sig.motion, sig.hue / 360, 0]), 16);\ns.start();",
+        hint: "Read video.signal() getters and push to shader.set() — or use audio.signal() + shader.bind() for audio sources. video.signal works on any canvas: 'camera', getCanvas(0), viz.canvas.",
+      },
+      {
+        label: "video signal — color → note",
+        code: "// Enable camera in toolbar first\nconst sig = video.signal('camera', { x: 0.5, y: 0.3, radius: 0.05 });\nconst scale = audio.scale('C3', 'pentatonic');\nconst synth = audio.pluck();\n\nsetInterval(() => {\n  const degree = Math.floor(sig.hue / 360 * scale.length);\n  synth.play(scale[degree], '16n');\n}, 200);\naudio.start();",
+        hint: "Map camera hue → scale degree → note. Move a colored object in front of the camera to play different pitches.",
+      },
+      {
+        label: "video.onMotion — trigger",
+        code: "// Enable camera in toolbar first\nconst kick = audio.kick();\nconst snare = audio.noise();\n\nvideo.onMotion('camera', 0.12, () => {\n  kick.play('C1', '8n');\n}, () => {\n  // motion stopped\n});\naudio.start();",
+        hint: "video.onMotion(source, threshold, onEnter, onExit?) — edge-triggered when motion crosses threshold 0–1. onExit fires when motion drops back below. Reuse an existing video.signal() object as source to share the sampling loop.",
+      },
+      {
+        label: "video.onBrightness — trigger",
+        code: "// Enable camera in toolbar first — cover/uncover camera to trigger\nconst synth = audio.fm();\n\nvideo.onBrightness('camera', 0.5,\n  () => synth.play('C4', '4n'),  // bright\n  () => synth.play('G3', '4n')   // dark\n);\naudio.start();",
+        hint: "video.onBrightness(source, threshold, onEnter, onExit?) — fires when average brightness of sampled region crosses threshold. Like audio.onLevel but for camera or any canvas.",
+      },
+      {
+        label: "video triggers — shared signal",
+        code: "// Share one sampling loop, multiple triggers\nconst sig = video.signal('camera', { x: 0.5, y: 0.5, radius: 0.2 });\nconst kick  = audio.kick();\nconst synth = audio.fm();\n\nvideo.onMotion(sig, 0.1, () => kick.play('C1', '8n'));\nvideo.onBrightness(sig, 0.6,\n  () => synth.play('C5', '16n'),\n  () => synth.play('G3', '16n')\n);\naudio.start();",
+        hint: "Pass an existing video.signal() object as source to onMotion/onBrightness — reuses the same pixel sampling loop instead of creating a new one per trigger.",
+      },
     ],
   },
   {
@@ -942,9 +1022,119 @@ audio.start();`,
         hint: "Spawn an audio visualizer window — pick source (master, mic, video, channel) and style (bars, wave, ring) from built-in controls",
       },
       {
+        label: "apply shader to window",
+        code: "// Apply a WebGPU shader directly inside any window — renders on top of its content\n// Auto-detects canvas/video source inside the window as video: input\nconst s = wm.applyShader('win-canvas-1', `\n  let col = textureSample(video, videoSampler, uv);\n  let grey = col.r * 0.299 + col.g * 0.587 + col.b * 0.114;\n  return vec4f(grey, grey * 0.8, grey * 0.6, 1.0);\n`);\n// s is a live Shader — s.set([...]), s.opacity(0.5), s.stop()",
+        hint: "wm.applyShader(winId, wgslCode, opts?) — mounts a shader canvas inside the target window's body. Auto-detects video source (canvas, camera, video element). Returns the Shader. Pass video: explicitly in opts to override.",
+      },
+      {
+        label: "apply shader to camera window",
+        code: "// Enable camera in toolbar first\nconst s = wm.applyShader('win-camera', `\n  let col = textureSample(video, videoSampler, uv);\n  let inv = vec4f(1.0 - col.r, 1.0 - col.g, 1.0 - col.b, 1.0);\n  return mix(col, inv, abs(sin(time)));\n`);\n// Pulses between normal and inverted camera feed",
+        hint: "wm.applyShader on the camera window auto-detects the camera canvas as the video source — no extra setup needed.",
+      },
+      {
         label: "list windows",
         code: "console.log(wm.list());",
         hint: "List all current window ids in the desktop",
+      },
+    ],
+  },
+  {
+    name: "Desktop",
+    commands: [
+      {
+        label: "desktop.files()",
+        code: "// List all files currently on the desktop\nconsole.log(desktop.files());\n// Each: { id, name, type, url, x, y }\n// type: 'image' | 'video' | 'audio' | 'code' | 'file'",
+        hint: "desktop.files() → array of { id, name, type, url, x, y }. Drop files from OS onto the IDE desktop to create icons.",
+      },
+      {
+        label: "desktop.onFile — shader",
+        code: "// Auto-load any dropped image or video as shader texture\ndesktop.onFile(f => {\n  if (f.type !== 'image' && f.type !== 'video') return;\n  const el = f.type === 'image'\n    ? Object.assign(new Image(), { src: f.url })\n    : Object.assign(document.createElement('video'), { src: f.url, loop: true, muted: true });\n  if (f.type === 'video') el.play();\n  new Shader(({ uv, col }) => [col.r, col.g, col.b, col.a], { video: el }).start();\n});",
+        hint: "desktop.onFile(fn) — fires whenever a file is dropped or added. fn receives { id, name, type, url, el }. Cleared on reset.",
+      },
+      {
+        label: "desktop.onFile — audio",
+        code: "// Play any audio file dropped onto desktop\ndesktop.onFile(f => {\n  if (f.type !== 'audio') return;\n  const a = new Audio(f.url);\n  a.play();\n});",
+        hint: "Use desktop.onFile to auto-handle specific file types. type is 'image' | 'video' | 'audio' | 'code' | 'file'.",
+      },
+      {
+        label: "desktop.onFile — video signal",
+        code: "// Route any dropped video into the video signal bus\ndesktop.onFile(f => {\n  if (f.type !== 'video') return;\n  const v = Object.assign(document.createElement('video'), { src: f.url, loop: true, muted: true });\n  v.play();\n  const sig = video.signal(v);\n  sig.stream(s => console.log('brightness:', s.brightness.toFixed(3)));\n});",
+        hint: "Dropped videos become video.signal() sources — feed into shaders, draw, or audio triggers.",
+      },
+      {
+        label: "desktop.add",
+        code: "// Add an icon programmatically (e.g. from a fetch'd image)\ndesktop.add('https://example.com/photo.jpg', { name: 'photo.jpg', x: 100, y: 100 });",
+        hint: "desktop.add(url, { name, type, x, y }) — create a file icon without drag-drop. type auto-detected from name if omitted.",
+      },
+      {
+        label: "desktop.clear",
+        code: "desktop.clear(); // remove all icons",
+        hint: "desktop.clear() removes all file icons from the desktop.",
+      },
+    ],
+  },
+  {
+    name: "Sensors",
+    commands: [
+      {
+        label: "mouse signal",
+        code: "const ms = sensors.mouse();\nms.stream(s => {\n  draw.clear();\n  draw.circle(s.x * 800, s.y * 450, 20, 'white');\n});",
+        hint: "sensors.mouse() → { x, y (0–1), vx, vy, speed, buttons, left, right, middle }. .stream(fn) — RAF push. .onMove(threshold, onEnter, onExit?). .onButton(btn, onDown, onUp?).",
+      },
+      {
+        label: "mouse → shader",
+        code: "const ms = sensors.mouse();\nconst s = new Shader(({ uv, time, custom }) => {\n  // custom.x = mouse.x, custom.y = mouse.y via .set()\n  const d = length(uv - vec2(custom.x, custom.y));\n  return [1.0 - smoothstep(0.0, 0.1, d), uv.y, uv.x, 1.0];\n});\nms.stream(m => s.set([m.x, m.y, 0, 0]));\ns.start();",
+        hint: "Pipe mouse position into shader custom uniform each frame via .stream().",
+      },
+      {
+        label: "mouse onMove trigger",
+        code: "const ms = sensors.mouse();\nms.onMove(0.005,\n  s => console.log('moving', s.speed.toFixed(4)),\n  s => console.log('stopped')\n);",
+        hint: "Edge-trigger: fires onEnter when movement speed >= threshold (normalized units/frame), onExit when it drops below.",
+      },
+      {
+        label: "keyboard signal",
+        code: "const kb = sensors.keyboard();\nkb.stream(k => {\n  if (k.is('ArrowLeft'))  draw.rect(0, 0, 100, 100, 'red');\n  if (k.is('ArrowRight')) draw.rect(700, 0, 100, 100, 'blue');\n  if (k.is(' '))          draw.clear();\n});\n// kb.held — Set of held keys   kb.last — last key pressed",
+        hint: "sensors.keyboard() → { held (Set), last, is(key), any(...keys) }. .stream(fn) RAF. .onKey(key, onDown, onUp?) — key names: 'a', 'ArrowLeft', ' ', 'Enter', '*' for any.",
+      },
+      {
+        label: "keyboard onKey",
+        code: "const kb = sensors.keyboard();\nkb.onKey(' ', () => draw.clear());\nkb.onKey('ArrowUp',   () => console.log('up'));\nkb.onKey('ArrowDown', () => console.log('down'));",
+        hint: "kb.onKey(key, onDown, onUp?) — edge trigger, cleaned up on reset. Use '*' to match any key.",
+      },
+      {
+        label: "gamepad signal",
+        code: "// Connect a gamepad first (press any button to activate)\nconst gp = sensors.gamepad(0); // index 0 = first controller\ngp.stream(g => {\n  if (!g.connected) return;\n  const x = g.axis(0); // left stick X  -1..1\n  const y = g.axis(1); // left stick Y  -1..1\n  draw.clear();\n  draw.circle(400 + x * 200, 225 + y * 200, 30, 'white');\n});",
+        hint: "sensors.gamepad(index) → { connected, axes[], buttons[], axis(i), button(i), pressed(i) }. .onButton(i, onDown, onUp?). .onAxis(i, threshold, onEnter, onExit?).",
+      },
+      {
+        label: "gamepad onButton",
+        code: "const gp = sensors.gamepad(0);\ngp.onButton(0, g => audio.say('A pressed'));\ngp.onButton(1, g => audio.say('B pressed'));\n// Standard mapping: 0=A, 1=B, 2=X, 3=Y, 4=LB, 5=RB",
+        hint: "Edge-trigger on controller button. Standard gamepad button mapping: 0=A/Cross, 1=B/Circle, 2=X/Square, 3=Y/Triangle, 4=LB, 5=RB, 6=LT, 7=RT.",
+      },
+      {
+        label: "motion signal",
+        code: "// Mobile or laptop with accelerometer\n// iOS: call sensors.requestMotion() from a button click first\nconst mot = sensors.motion();\nmot.stream(m => {\n  draw.clear();\n  draw.circle(400 + m.gamma * 4, 225 - m.beta * 4, 20, 'cyan');\n  // m.ax/ay/az  acceleration m/s²  (incl. gravity)\n  // m.alpha/beta/gamma  orientation degrees\n});",
+        hint: "sensors.motion() → { ax, ay, az (m/s²), gx, gy, gz (deg/s rotation), alpha (compass 0–360), beta (tilt -180..180), gamma (tilt -90..90), magnitude }. .onShake(threshold, fn). .onTilt(axis, threshold, fn).",
+      },
+      {
+        label: "motion onShake",
+        code: "const mot = sensors.motion();\nmot.onShake(20,\n  m => { draw.clear(); draw.bg('#f00'); },\n  m => draw.bg('#000')\n);",
+        hint: "Fires when total acceleration magnitude >= threshold m/s². 15 = moderate shake, 25 = hard shake.",
+      },
+      {
+        label: "geolocation signal",
+        code: "const geo = sensors.geo();\ngeo.stream(g => {\n  if (!g.ready) return;\n  console.log(`${g.lat.toFixed(5)}, ${g.lon.toFixed(5)} ±${g.accuracy|0}m`);\n  // g.speed m/s   g.heading degrees from north\n});",
+        hint: "sensors.geo({ highAccuracy: false }) → { lat, lon, altitude, accuracy, speed, heading, ready, error }. Browser asks for permission on first call.",
+      },
+      {
+        label: "network signal",
+        code: "const net = sensors.network();\nconsole.log(net.online, net.type, net.downlink + 'Mbps');\nnet.onChange(n => {\n  console.log(n.online ? 'back online' : 'offline', n.type);\n});",
+        hint: "sensors.network() → { online, type ('4g'|'3g'|'wifi'|'ethernet'|…), downlink (Mbps), rtt (ms), saveData }. .onChange(fn) fires on online/offline/type change. Chrome/Edge only for type/downlink/rtt.",
+      },
+      {
+        label: "battery signal",
+        code: "// Returns a Promise — use await or .then()\nconst bat = await sensors.battery();\nconsole.log(`${(bat.level * 100)|0}% ${bat.charging ? 'charging' : 'discharging'}`);\nbat.onChange(b => console.log(b.level, b.charging));",
+        hint: "sensors.battery() → Promise → { level (0–1), charging, timeToFull (s), timeToEmpty (s) }. .onChange(fn) on level/charging change. Chrome/Edge only; returns stub on unsupported browsers.",
       },
     ],
   },

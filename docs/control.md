@@ -33,6 +33,16 @@ setInterval(() => {
 
 ## Keyboard
 
+For most cases, prefer `sensors.keyboard()` — it gives live held-key state and cleaner edge triggers (see [sensors.md](sensors.md)):
+
+```js
+const kb = sensors.keyboard();
+kb.onKey('ArrowUp', () => y -= 10);
+setInterval(() => { if (kb.is('w')) y -= 5; }, 16);
+```
+
+`onKey` (global shorthand) still works for simple one-shot handlers:
+
 ```js
 onKey('ArrowUp', (e) => { /* fires on keydown */ });
 onKey('any', (e) => { console.log(e.key); }); // any key
@@ -44,7 +54,15 @@ Common key names: `'ArrowUp'` `'ArrowDown'` `'ArrowLeft'` `'ArrowRight'` `' '` (
 
 ## Mouse
 
-Use standard DOM events — they're tracked and removed automatically on Stop/Reset:
+For most cases, prefer `sensors.mouse()` — normalized coords, velocity, and button edge triggers (see [sensors.md](sensors.md)):
+
+```js
+const m = sensors.mouse();
+m.stream(s => draw.circle(s.x * 1600, s.y * 900, 10, 'white'));
+m.onButton(0, () => draw.bg('red'), () => draw.bg('black'));
+```
+
+Use raw DOM events when you need canvas-relative pixel coords or click targets:
 
 ```js
 document.addEventListener('mousemove', (e) => {

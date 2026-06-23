@@ -15,6 +15,44 @@ function track(d) {
   return d;
 }
 
+// ── Audio signal helpers ──────────────────────────────────────────────────────
+
+// Normalize any audio source to a Float32Array[0..1] of length `bins`.
+// src: 'mic' | Web Audio AnalyserNode | Tone.Analyser
+function _readFft(src, bins) {
+  const node = src === 'mic' ? window.__ar_mic_analyser : src;
+  if (!node) return new Float32Array(bins);
+  const out = new Float32Array(bins);
+  if (typeof node.getValue === 'function') {
+    // Tone.Analyser — dB values (-Infinity..0)
+    const raw = node.getValue();
+    const step = raw.length / bins;
+    for (let i = 0; i < bins; i++) {
+      const db = raw[Math.floor(i * step)];
+      out[i] = isFinite(db) ? Math.max(0, (db + 80) / 80) : 0;
+    }
+  } else if (node.frequencyBinCount) {
+    // Web Audio AnalyserNode
+    const data = new Uint8Array(node.frequencyBinCount);
+    node.getByteFrequencyData(data);
+    const step = data.length / bins;
+    for (let i = 0; i < bins; i++) out[i] = data[Math.floor(i * step)] / 255;
+  }
+  return out;
+}
+
+// Wrap a Tone node with an internal Analyser; pass through AnalyserNode/Tone.Analyser/string.
+function _makeAnalyser(source, bins) {
+  if (!source || source === 'mic') return source;
+  if (typeof source.getValue === 'function') return source; // Tone.Analyser
+  if (source.frequencyBinCount) return source;              // Web Audio AnalyserNode
+  // Tone instrument/effect — connect a new Analyser
+  const a = new Tone.Analyser('fft', bins);
+  track(a);
+  try { (source._ ?? source).connect(a); } catch (_) {}
+  return a;
+}
+
 function _ensureRecognition() {
   if (_recognition) return _recognition;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -185,7 +223,6 @@ class Instrument {
     return this;
   }
   connect(node) {
-    this._.disconnect();
     this._.connect(node);
     return this;
   }
@@ -356,6 +393,65 @@ class AudioAPI {
   }
   analyser(bins = 32) {
     return track(new Tone.Analyser("fft", bins));
+  }
+
+  // Live signal object from any audio source (Tone node, Tone.Analyser, 'mic', or Web Audio AnalyserNode).
+  // Returns { value, fft, bass, mid, high } — all lazy getters, safe to call every frame.
+  signal(source, bins = 256) {
+    const analyser = _makeAnalyser(source, bins);
+    let _cached = null, _cacheTime = -1;
+    const getFft = () => {
+      const now = performance.now();
+      if (now - _cacheTime > 8) {
+        _cached = _readFft(analyser ?? source, bins);
+        _cacheTime = now;
+      }
+      return _cached ?? new Float32Array(bins);
+    };
+    const avg = (f, s, e) => { let sum = 0; for (let i = s; i < e; i++) sum += f[i]; return sum / (e - s) || 0; };
+    const sig = {
+      get fft()   { return getFft(); },
+      get value() { return avg(getFft(), 0, bins); },
+      get bass()  { return avg(getFft(), 0, Math.floor(bins * 0.1)); },
+      get mid()   { return avg(getFft(), Math.floor(bins * 0.1), Math.floor(bins * 0.5)); },
+      get high()  { return avg(getFft(), Math.floor(bins * 0.5), bins); },
+      // RAF-driven push — fn(sig) called every frame, cleaned up on reset
+      stream(fn) {
+        let rafId;
+        const frame = () => { fn(sig); rafId = requestAnimationFrame(frame); };
+        rafId = requestAnimationFrame(frame);
+        _cleanupFns.push(() => cancelAnimationFrame(rafId));
+        return sig;
+      },
+    };
+    return sig;
+  }
+
+  // Live bins×1 canvas where R channel = FFT magnitude 0–1. Feed into Shader as video:.
+  // Use uv.x in the shader to address frequency bins (0=bass, 1=treble).
+  fftCanvas(source, bins = 256) {
+    const analyser = _makeAnalyser(source, bins);
+    const canvas = document.createElement('canvas');
+    canvas.width = bins;
+    canvas.height = 1;
+    const ctx2d = canvas.getContext('2d');
+    const img = ctx2d.createImageData(bins, 1);
+    let rafId;
+    const frame = () => {
+      const fft = _readFft(analyser ?? source, bins);
+      for (let i = 0; i < bins; i++) {
+        const v = Math.round(Math.min(1, fft[i]) * 255);
+        img.data[i * 4]     = v;
+        img.data[i * 4 + 1] = v;
+        img.data[i * 4 + 2] = v;
+        img.data[i * 4 + 3] = 255;
+      }
+      ctx2d.putImageData(img, 0, 0);
+      rafId = requestAnimationFrame(frame);
+    };
+    rafId = requestAnimationFrame(frame);
+    _cleanupFns.push(() => cancelAnimationFrame(rafId));
+    return canvas;
   }
 
   // ── Players ──────────────────────────────────────────────────────────────

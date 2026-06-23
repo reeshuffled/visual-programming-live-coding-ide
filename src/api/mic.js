@@ -4,7 +4,6 @@ export function initMic() {
   let audioCtx = null;
   let analyser = null;
   let rafId = null;
-  let micVizWinId = null;
 
   const toggle = document.getElementById("micToggle");
 
@@ -50,22 +49,6 @@ export function initMic() {
     }
     if (audioCtx.state === "suspended") audioCtx.resume();
     if (!rafId) drawBars();
-
-    // Spawn viz window pointed at mic if not already open
-    const existingWin = micVizWinId && document.getElementById(micVizWinId);
-    if (!existingWin) {
-      const desk = document.getElementById("desktop");
-      const dw = desk.offsetWidth, dh = desk.offsetHeight;
-      const w = Math.round(dw * 0.30), h = Math.round(dh * 0.14);
-      micVizWinId = window.wm?.spawn('Mic', {
-        type: 'viz',
-        source: 'mic',
-        style: 'bars',
-        x: Math.round(dw * 0.42),
-        y: Math.round(dh * 0.82),
-        w, h,
-      }) ?? null;
-    }
   };
 
   const stopMic = () => {

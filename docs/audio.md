@@ -173,6 +173,33 @@ setInterval(() => {
 
 `audio.mic()` is async — `await` it. The browser will prompt for microphone permission. The source is tracked and closed automatically on Stop/Reset.
 
+### Mic signal bus
+
+Enable the mic in the toolbar, then read the live level without routing a mic node:
+
+```js
+// audio.level — live 0–1 RMS float, always available once mic is on
+setInterval(() => {
+  draw.clear().bg('#111');
+  draw.rect(100, 400, audio.level * 800, 20, 'cyan');
+}, 16);
+
+// audio.onLevel(threshold, onEnter, onExit?) — edge-trigger
+// fires onEnter when level crosses threshold upward, onExit when it drops below
+audio.onLevel(0.6, () => draw.bg('red'), () => draw.bg('black'));
+
+// Feed into a shader via custom uniform
+const shader = new Shader(`
+  let pulse = custom.x;
+  let d = distance(uv, vec2f(0.5));
+  return vec4f(vec3f(pulse - d * 2.0), 1.0);
+`);
+shader.start();
+setInterval(() => shader.set(audio.level), 16);
+```
+
+These follow the same signal bus pattern as `sensors.*` and `video.signal` — any live 0–1 value can drive a shader uniform, a filter frequency, a draw parameter, or anything else. See [sensors.md](sensors.md) for the full comparison.
+
 ---
 
 ## Analysis (Audio → Visual)

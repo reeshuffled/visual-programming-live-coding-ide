@@ -1403,6 +1403,10 @@ export function loadWorkspaceJSON(workspace, json) {
   Blockly.serialization.workspaces.load(json, workspace);
 }
 
+export function saveWorkspaceJSON(workspace) {
+  return Blockly.serialization.workspaces.save(workspace);
+}
+
 const _BKY_HUES = { LOGIC: 210, MATH: 230, TEXTS: 160, VARIABLES: 330 };
 
 export const TOOLBOX_CATEGORY_META = TOOLBOX.contents.map(c => {

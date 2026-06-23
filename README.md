@@ -13,12 +13,12 @@ A live coding environment for creating audiovisual experiences in the browser �
 
 - **GPU shaders** — full-screen WebGPU/WGSL fragment shaders with `time`, `uv`, `mouse`, and custom uniforms
 - **Audio synthesis** — synths, sequencers, effects chains via [Tone.js](https://tonejs.github.io/)
-- **Mic triggers** — react to sound level with `audio.level` (0–1 RMS) and `audio.onLevel(threshold, fn)`
 - **Voice & TTS** — recognize spoken words with `audio.onWord()` / `audio.onSpeech()`, speak with `audio.say()`
-- **Media layers** — image and video overlaid on the canvas with z-ordering
 - **Camera + vision** — react to hand gestures, facial expressions, and detected objects via [MediaPipe](https://github.com/google-ai-edge/mediapipe)
+- **Signal bus** — any live signal (mic level, mouse position, camera brightness, device motion, gamepad axis) can drive any sink (shader uniform, filter cutoff, draw parameter, pattern speed). `audio.level`, `video.signal`, `sensors.mouse/keyboard/gamepad/motion/geo/network/battery` all follow the same live-getter + edge-trigger pattern
+- **Media layers** — image and video overlaid on the canvas with z-ordering
 - **2D canvas** — draw on z-indexed layers with CSS filter effects (blur, hue, brightness, etc.)
-- **Window management** — spawn floating windows (image, video, camera, canvas, shader, HTML), browse local directories, move/resize/maximize from code (`wm.spawn`, `wm.browse`, `wm.layout`, etc.)
+- **Window management** — spawn floating windows (image, video, camera, canvas, shader, HTML), browse local directories, move/resize/maximize from code (`wm.spawn`, `wm.browse`, `wm.layout`, etc.); manage desktop file icons with `desktop.add/onFile/files`
 
 ## Editor features
 
@@ -116,6 +116,51 @@ console.log(wm.list());   // all window ids
 
 // Per-window audio routing (mute/volume controls in titlebar affect this channel)
 synth.connect(wm.channel(id));
+
+// Desktop file icons — drag files onto the IDE desktop or add programmatically
+desktop.onFile(({ name, type, url }) => {
+  wm.spawn(name, { type, src: url });   // open icon → spawn window
+});
+desktop.add(url, { name: 'snapshot.png', type: 'image' });
+console.log(desktop.files());           // list all icons
+
+// Video signals — sample a canvas/camera region as live numeric signals
+const sig = video.signal('camera', { x: 0.5, y: 0.5, radius: 0.1 });
+setInterval(() => {
+  console.log(sig.brightness, sig.motion, sig.hue);
+}, 100);
+
+// Edge-trigger: fire when motion in a region spikes
+video.onMotion('camera', 0.3, () => draw.bg('red'), () => draw.bg('black'));
+
+// Signals from any canvas too
+const sig2 = video.signal(getCanvas(0), { x: 0.2, y: 0.8 });
+sig2.stream(s => { /* s.brightness live every frame */ });
+
+// Sensors — unified signal bus
+const mouse = sensors.mouse();
+mouse.stream(m => draw.circle(m.x * 1600, m.y * 900, 10, 'white'));
+mouse.onMove(0.01, () => console.log('moving'));
+
+const kb = sensors.keyboard();
+kb.onKey('ArrowLeft', () => x -= 10);
+setInterval(() => { if (kb.is('w')) y -= 5; }, 16);
+
+const pad = sensors.gamepad();
+pad.stream(g => {
+  const x = g.axis(0); // left stick x -1..1
+  const fire = g.pressed(0); // A button
+});
+
+const motion = sensors.motion();
+motion.onShake(20, () => draw.clear());
+motion.stream(m => console.log(m.magnitude));
+
+const geo = sensors.geo();
+geo.stream(g => draw.text(`${g.lat?.toFixed(4)}, ${g.lon?.toFixed(4)}`, 50, 50));
+
+const bat = await sensors.battery();
+console.log(bat.level, bat.charging);
 ```
 
 ## Tech stack

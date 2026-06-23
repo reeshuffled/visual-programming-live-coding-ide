@@ -11,8 +11,11 @@ Press **?** in the IDE for the in-app audio quick reference.
 | [canvas.md](canvas.md) | Canvas 2D drawing, layers, CSS effects |
 | [media.md](media.md) | Images, video layers |
 | [vision.md](vision.md) | Object detection, gesture, face expression |
+| [video.md](video.md) | Sample canvas/camera regions as live brightness/color/motion signals |
+| [sensors.md](sensors.md) | Mouse, keyboard, gamepad, device motion, geolocation, network, battery signals |
 | [control.md](control.md) | Timers, keyboard, color, utilities |
 | [windows.md](windows.md) | Spawn, tile, show/hide, move/resize IDE windows from code |
+| [desktop.md](desktop.md) | Desktop file icon management |
 
 ## Z-order
 
@@ -48,4 +51,17 @@ wm.layout(name)                                 // switch tiling layout
 wm.spawn(title, opts)                           // create floating window → id
 wm.pickFile(key)                                // file picker → blob URL (async, cached by key)
 wm.list()                                       // list all window ids
+video.signal(source, opts?)                     // live brightness/r/g/b/motion/hue from canvas or camera (see video.md)
+video.onMotion(src, threshold, onEnter, onExit?)  // edge-trigger on motion
+video.onBrightness(src, threshold, onEnter, onExit?)  // edge-trigger on brightness
+sensors.mouse()     // live x/y/buttons + .onMove/.onButton (see sensors.md)
+sensors.keyboard()  // live held keys + .onKey
+sensors.gamepad()   // axis/button/pressed + .onButton/.onAxis
+sensors.motion()    // device accelerometer/gyro + .onShake/.onTilt
+sensors.geo()       // geolocation lat/lon/speed/heading
+sensors.network()   // online/type/downlink + .onChange
+sensors.battery()   // async → level/charging + .onChange
+desktop.add(url, opts?)   // add file icon to desktop (see desktop.md)
+desktop.files()           // list all file icons
+desktop.onFile(fn)        // callback when user opens a file icon
 ```

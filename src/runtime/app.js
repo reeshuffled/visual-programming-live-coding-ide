@@ -6,6 +6,9 @@ import { audio, startAudio, cleanupAudio } from "../api/audio.js";
 import { Shader, ShaderFX, cleanupShaders } from "../api/shader.js";
 import { AudioViz, cleanupViz } from "../api/viz.js";
 import { Media, cleanupMedia } from "../api/media.js";
+import { VideoSignalAPI, cleanupVideoSignal } from "../api/video-signal.js";
+import { SensorsAPI, cleanupSensors } from "../api/sensors.js";
+import { DesktopAPI, initDesktop, cleanupDesktop, addFolderIcon } from "../api/desktop-files.js";
 import { initDOMCaptures, captureWindow as _captureWindow, cleanupCaptures } from "../editor/editor-capture.js";
 import { initWM } from "../api/wm.js";
 import {
@@ -13,6 +16,7 @@ import {
   TOOLBOX_CATEGORY_META, finishBlockRenders,
 } from "../blocks/blocks.js";
 import { EditorInstance } from "../editor/editor-instance.js";
+import { saveProject, loadProject } from "../api/project.js";
 
 // ── Capture native timer/event functions before any user-code patching ────────
 const _nativeSetInterval  = window.setInterval.bind(window);
@@ -30,9 +34,17 @@ const nativeTimers = {
 
 // ── Shared globals exposed to all user code ───────────────────────────────────
 window.vision   = vision;
+window.video    = VideoSignalAPI;
+window.sensors  = SensorsAPI;
+window.desktop  = DesktopAPI;
 window.audio    = audio;
 window.Shader   = Shader;
 window.ShaderFX = ShaderFX;
+// Vector constructor stubs — used as type hints in Shader JS function params.
+// In the JS function body these are real values; the transpiler maps them to WGSL vec types.
+window.vec2 = (x = 0, y = 0)             => ({ x, y, _wgsl: 'vec2f' });
+window.vec3 = (x = 0, y = 0, z = 0)      => ({ x, y, z, _wgsl: 'vec3f' });
+window.vec4 = (x = 0, y = 0, z = 0, w=1) => ({ x, y, z, w, _wgsl: 'vec4f' });
 window.Camera   = Camera;
 window.AudioViz = AudioViz;
 window.Media    = Media;
@@ -54,7 +66,12 @@ class Color {
   }
 }
 window.Color = Color;
-window.onKey = (key, fn) => document.addEventListener("keydown", (e) => { if (key === "any" || e.key === key) fn(e); });
+window.onKey = (key, fn) => document.addEventListener("keydown", (e) => {
+  const el = document.activeElement;
+  if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.isContentEditable)) return;
+  if (window.__ar_paused) return;
+  if (key === "any" || e.key === key) fn(e);
+});
 window.randUni = (lo, hi) => Math.random() * (hi - lo) + lo;
 
 // ── Global addEventListener patch — routes listeners to active editor ──────────
@@ -85,6 +102,7 @@ window.onload = () => {
       inst.inlineWidgets.refresh();
     });
   });
+  initDesktop(window.wm);
 
   const _stage = document.getElementById('wm-stage');
 
@@ -258,33 +276,16 @@ window.onload = () => {
     toolkitIdCounter = Math.max(toolkitIdCounter, id);
     const winId = id === 1 ? 'win-toolkit' : `win-toolkit-${id}`;
     const title = id === 1 ? 'API Toolbox' : `API Toolbox ${id}`;
-    window.wm.spawn(title, { id: winId, type: 'html', html: '' });
+    window.wm.spawn(title, { id: winId, type: 'html', html: '', audio: false });
     const win = document.getElementById(winId);
     _buildToolkitContent(win);
     win.querySelector('.wm-dup')?.remove();
-    win.querySelector('.wm-audio-ctrl')?.remove();
     return win;
   }
 
-  window.wm.registerBuiltin('win-toolkit', () => createToolkit(1));
-
-  window.wm.registerBuiltin('win-camera', () => {
-    window.wm.spawn('Camera', { id: 'win-camera', type: 'html', html: '' });
-    const win = document.getElementById('win-camera');
-    const body = win.querySelector('.wm-body');
-    body.style.background = '#000';
-    body.appendChild(document.getElementById('camera'));
-    win._wmRescueContent = () => _stage.appendChild(document.getElementById('camera'));
-    win._wmSpawnOpts = { title: 'Camera mirror', type: 'camera' };
-    win.querySelector('.wm-audio-ctrl')?.remove();
-    win.style.display = 'none';
-  });
-
-  ['win-toolkit', 'win-camera'].forEach(id => window.wm.createBuiltin(id));
-
   // ── Editor instances ───────────────────────────────────────────────────────
   window.__ar_instances = new Map();
-  const defaultCode = document.getElementById("code_text")?.innerHTML.trim() ?? '';
+  const defaultCode = document.getElementById("code_text")?.textContent.trim() ?? '';
   let editorIdCounter = 0;
 
   function createEditor(id) {
@@ -298,15 +299,36 @@ window.onload = () => {
     window.__ar_instances.set(id, inst);
     return inst;
   }
+  window.__ar_createEditor = createEditor;
+  window.__ar_newEditorWithCode = (code) => {
+    const id = ++editorIdCounter;
+    try { localStorage.setItem(`vl-ide-code-${id}`, code); } catch (_) {}
+    const m = EditorInstance.loadManifest();
+    if (!m.includes(id)) EditorInstance.saveManifest([...m, id]);
+    return createEditor(id);
+  };
 
-  // Restore from manifest
-  const manifest = EditorInstance.loadManifest();
+  // Restore from manifest (fall back to editor 1 on first load)
+  let manifest = EditorInstance.loadManifest();
+  if (manifest.length === 0) {
+    manifest = [1];
+    EditorInstance.saveManifest(manifest);
+  }
   for (const id of manifest) createEditor(id);
 
-  // ── Initial layout ─────────────────────────────────────────────────────────
-  // Use editor-1 in split layout
-  window.wm.layout('split');
   window.wm.restoreState();
+
+  // Auto-execute editors that were running/paused before refresh
+  for (const id of manifest) {
+    const state = localStorage.getItem(`vl-ide-exec-${id}`);
+    if (state === 'running' || state === 'paused') {
+      const inst = window.__ar_instances.get(id);
+      if (inst) {
+        inst.execute();
+        if (state === 'paused') setTimeout(() => inst.pauseRunning(), 200);
+      }
+    }
+  }
 
   // ── "New Editor" button ────────────────────────────────────────────────────
   document.getElementById('newEditorBtn')?.addEventListener('click', () => {
@@ -327,6 +349,70 @@ window.onload = () => {
     if (edWin)  { edWin.style.cssText  += `;left:${x}px;top:${y}px;width:${w}px;height:${h}px;display:flex;`; }
     if (outWin) { outWin.style.cssText += `;left:${x + w + 6}px;top:${y}px;width:${Math.min(500, dw - x - w - 16)}px;height:${h}px;display:flex;`; }
   });
+
+  // ── Desktop right-click context menu ──────────────────────────────────────
+  (() => {
+    let menu = null;
+
+    function closeMenu() {
+      menu?.remove();
+      menu = null;
+    }
+
+    document.getElementById('desktop').addEventListener('contextmenu', (e) => {
+      if (e.target.closest('.wm-win') || e.target.closest('#taskbar')) return;
+      e.preventDefault();
+      closeMenu();
+
+      const cx = e.clientX, cy = e.clientY;
+      menu = document.createElement('div');
+      menu.className = 'desktop-ctx-menu';
+
+      const items = [
+        { icon: 'fa-file-code', label: 'New Code File', action() {
+          const id = ++editorIdCounter;
+          const m = EditorInstance.loadManifest();
+          m.push(id);
+          EditorInstance.saveManifest(m);
+          const inst = createEditor(id);
+          const desk = document.getElementById('desktop');
+          const dw = desk.offsetWidth, dh = desk.offsetHeight;
+          const w = Math.round(dw * 0.42), h = Math.round(dh * 0.6);
+          const x = Math.min(cx, dw - w - 10);
+          const y = Math.min(cy, dh - h - 44);
+          const edWin = document.getElementById(inst.editorWinId);
+          if (edWin) edWin.style.cssText += `;left:${x}px;top:${y}px;width:${w}px;height:${h}px;display:flex;`;
+        }},
+        { icon: 'fa-folder-open', label: 'Grant Folder Access…', async action() {
+          const folderData = await window.wm.pickFolder();
+          if (!folderData) return;
+          const desk = document.getElementById('desktop');
+          const rect = desk.getBoundingClientRect();
+          const iconId = addFolderIcon(folderData, cx - rect.left, cy - rect.top);
+          if (folderData.handle) window.wm.registerFolder(iconId, folderData.handle);
+          else if (folderData.fallback) window.wm.registerFolderFallback(iconId, folderData.fallback);
+          window.wm.browse(iconId, null, { x: cx, y: cy }).catch(() => {});
+        }},
+      ];
+
+      items.forEach(({ icon, label, action }) => {
+        const item = document.createElement('div');
+        item.className = 'desktop-ctx-item';
+        item.innerHTML = `<i class="fa-solid ${icon}"></i> ${label}`;
+        item.addEventListener('click', () => { closeMenu(); action(); });
+        menu.appendChild(item);
+      });
+
+      document.body.appendChild(menu);
+
+      const mw = menu.offsetWidth, mh = menu.offsetHeight;
+      menu.style.left = `${Math.min(cx, window.innerWidth  - mw - 4)}px`;
+      menu.style.top  = `${Math.min(cy, window.innerHeight - mh - 4)}px`;
+    });
+
+    document.addEventListener('mousedown', (e) => { if (menu && !menu.contains(e.target)) closeMenu(); });
+    document.addEventListener('keydown',   (e) => { if (e.key === 'Escape') closeMenu(); });
+  })();
 
   // ── "New Toolkit" button ───────────────────────────────────────────────────
   document.getElementById('newToolkitBtn')?.addEventListener('click', () => {
@@ -354,7 +440,7 @@ window.onload = () => {
     });
   });
 
-  document.getElementById('newMicVizBtn')?.addEventListener('click', () => {
+  const _spawnMicViz = () => {
     const desk = document.getElementById('desktop');
     const dw = desk.offsetWidth, dh = desk.offsetHeight;
     const offset = (_vizCount++ % 8) * 24;
@@ -364,9 +450,9 @@ window.onload = () => {
       x: Math.round((dw - 400) / 2) + offset,
       y: Math.round((dh - 180) / 2) + offset,
     });
-  });
+  };
 
-  document.getElementById('newCamVizBtn')?.addEventListener('click', () => {
+  const _spawnCamWin = () => {
     const desk = document.getElementById('desktop');
     const dw = desk.offsetWidth, dh = desk.offsetHeight;
     const offset = (_vizCount++ % 8) * 24;
@@ -376,7 +462,25 @@ window.onload = () => {
       x: Math.round((dw - 320) / 2) + offset,
       y: Math.round((dh - 240) / 2) + offset,
     });
+  };
+
+  // Show/hide mic viz button with mic state; auto-spawn on first enable
+  const micVizBtn = document.getElementById('newMicVizBtn');
+  document.getElementById('micToggle')?.addEventListener('click', () => {
+    const on = window.__ar_mic_on;
+    if (micVizBtn) micVizBtn.style.display = on ? '' : 'none';
+    if (on) _spawnMicViz();
   });
+  document.getElementById('newMicVizBtn')?.addEventListener('click', _spawnMicViz);
+
+  // Show/hide camera viz button with camera state; auto-spawn on first enable
+  const camVizBtn = document.getElementById('newCamVizBtn');
+  document.getElementById('cameraToggle')?.addEventListener('click', () => {
+    const on = window.__ar_camera_on;
+    if (camVizBtn) camVizBtn.style.display = on ? '' : 'none';
+    if (on) _spawnCamWin();
+  });
+  document.getElementById('newCamVizBtn')?.addEventListener('click', _spawnCamWin);
 
   // ── Files button ──────────────────────────────────────────────────────────
   const filesBtn = document.getElementById('filesBtn');
@@ -420,7 +524,26 @@ window.onload = () => {
     if (e.key === "Escape" && helpOverlay?.style.display !== "none") { helpOverlay.style.display = "none"; helpBtn?.classList.remove("active"); }
   });
 
+  // ── Project save / load ───────────────────────────────────────────────────
+  const appAPI = {
+    createEditor,
+    createToolkit,
+    nextToolkitId: () => ++toolkitIdCounter,
+    updateManifest: (ids) => EditorInstance.saveManifest(ids),
+  };
+
+  document.getElementById('saveProjectBtn')?.addEventListener('click', () =>
+    saveProject(window.wm, window.__ar_instances));
+
+  document.getElementById('loadProjectBtn')?.addEventListener('click', () =>
+    loadProject(window.wm, window.__ar_instances, appAPI));
+
   // ── Fullscreen ───────────────────────────────────────────────────────────
+  document.getElementById('undoWinBtn')?.addEventListener('click', () => window.wm.undo());
+  document.getElementById('redoWinBtn')?.addEventListener('click', () => window.wm.redo());
+
+  document.getElementById('closeAllWinsBtn')?.addEventListener('click', () => window.wm.closeAll());
+
   const fullscreenBtn = document.getElementById('fullscreenBtn');
   const _updateFsIcon = () => {
     const fs = !!document.fullscreenElement;
