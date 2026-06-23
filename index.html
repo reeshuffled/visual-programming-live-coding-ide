@@ -1,0 +1,661 @@
+<html>
+  <head>
+    <title>Visual Live Coding IDE</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" />
+    <link rel="stylesheet" href="src/editor/cm/lib/codemirror.css" />
+    <link rel="stylesheet" href="src/editor/cm/addon/hint/show-hint.css" />
+    <link rel="stylesheet" href="src/editor/cm/addon/fold/foldgutter.css" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* ── Nav ─────────────────────────────────────────────────────────────── */
+      nav ul {
+        padding: 6px 8px;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        background: #f0f2f5;
+        border-bottom: 1px solid #ddd;
+        list-style: none;
+      }
+      nav ul li {
+        display: inline-flex;
+        align-items: center;
+        padding: 5px 10px;
+        border-radius: 7px;
+        border: none;
+        background: #e2e6ec;
+        box-shadow: 0 4px 0 #b4b8c0, inset 0 1px 0 rgba(255,255,255,0.75);
+        cursor: pointer;
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        user-select: none;
+        transition: transform 0.07s, box-shadow 0.07s;
+        white-space: nowrap;
+      }
+      nav ul li:hover { background: #d4d8e0; }
+      nav ul li:active { box-shadow: 0 1px 0 #b4b8c0; transform: translateY(3px); }
+      nav li.active {
+        background: #1565c0;
+        color: #fff;
+        box-shadow: 0 4px 0 #0a3d8a, inset 0 1px 0 rgba(255,255,255,0.2);
+      }
+      nav li.active:hover { background: #1976d2; }
+      nav li.active:active { box-shadow: 0 1px 0 #0a3d8a; transform: translateY(3px); }
+      nav li.no-btn { background: transparent; box-shadow: none; cursor: default; }
+      nav li.no-btn:hover { background: transparent; }
+      nav li.no-btn:active { transform: none; box-shadow: none; }
+      nav li.sep {
+        width: 1px; height: 20px;
+        background: #ccc; padding: 0;
+        box-shadow: none; cursor: default; border-radius: 0;
+      }
+      nav li.sep:hover { background: #ccc; }
+      nav li.sep:active { transform: none; box-shadow: none; }
+      .btn-green {
+        background: #2e7d32 !important; color: #fff !important;
+        box-shadow: 0 4px 0 #1a4d1d, inset 0 1px 0 rgba(255,255,255,0.15) !important;
+      }
+      .btn-green:hover { background: #388e3c !important; }
+      .btn-green:active { box-shadow: 0 1px 0 #1a4d1d !important; transform: translateY(3px); }
+      .btn-orange {
+        background: #e65100 !important; color: #fff !important;
+        box-shadow: 0 4px 0 #8a3000, inset 0 1px 0 rgba(255,255,255,0.15) !important;
+      }
+      .btn-orange:hover { background: #f57c00 !important; }
+      .btn-orange:active { box-shadow: 0 1px 0 #8a3000 !important; transform: translateY(3px); }
+      .btn-red {
+        background: #c62828 !important; color: #fff !important;
+        box-shadow: 0 4px 0 #7f0000, inset 0 1px 0 rgba(255,255,255,0.15) !important;
+      }
+      .btn-red:hover { background: #d32f2f !important; }
+      .btn-red:active { box-shadow: 0 1px 0 #7f0000 !important; transform: translateY(3px); }
+
+      /* ── Mode toggle switch ──────────────────────────────────────────────── */
+      #modeToggle {
+        display: inline-flex;
+        align-items: center;
+        background: #c4c9d4;
+        border-radius: 20px;
+        padding: 3px;
+        position: relative;
+        cursor: pointer;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.22);
+        user-select: none;
+      }
+      .mode-thumb {
+        position: absolute;
+        top: 3px; bottom: 3px;
+        border-radius: 16px;
+        background: #1565c0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.2);
+        transition: left 0.18s cubic-bezier(.4,0,.2,1), width 0.18s cubic-bezier(.4,0,.2,1);
+        pointer-events: none;
+      }
+      .toggle-opt {
+        position: relative; z-index: 1;
+        padding: 4px 9px;
+        font-size: 13px;
+        color: #555;
+        display: flex; align-items: center;
+        transition: color 0.18s;
+        white-space: nowrap;
+        border-radius: 16px;
+      }
+      .toggle-opt.active { color: #fff; }
+
+      /* ── Desktop surface ─────────────────────────────────────────────────── */
+      #desktop {
+        flex: 1 1 0;
+        position: relative;
+        overflow: hidden;
+        background: #5a6475;
+        background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.07) 1px, transparent 0);
+        background-size: 24px 24px;
+      }
+
+      /* ── Window chrome ───────────────────────────────────────────────────── */
+      .wm-win {
+        position: absolute;
+        display: flex;
+        flex-direction: column;
+        background: #fff;
+        border: 1px solid #bbb;
+        border-radius: 8px;
+        overflow: hidden;
+        min-width: 160px;
+        min-height: 60px;
+        box-shadow: 0 6px 28px rgba(0,0,0,0.35);
+      }
+      .wm-titlebar {
+        height: 28px;
+        background: linear-gradient(180deg, #e8eaed 0%, #d5d8de 100%);
+        display: flex;
+        align-items: center;
+        padding: 0 8px;
+        cursor: move;
+        user-select: none;
+        font-family: Arial, sans-serif;
+        font-size: 10px;
+        color: #444;
+        flex-shrink: 0;
+        border-bottom: 1px solid #c0c3c8;
+        gap: 6px;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+      }
+      .wm-title { flex: 1; }
+      .wm-btn {
+        width: 14px; height: 14px;
+        display: flex; align-items: center; justify-content: center;
+        border-radius: 50%;
+        cursor: pointer;
+        font-size: 9px;
+        background: #c8c9cb;
+        color: #666;
+        flex-shrink: 0;
+        line-height: 1;
+      }
+      .wm-close:hover { background: #c62828; color: #fff; }
+      .wm-max:hover { background: #1565c0; color: #fff; }
+      .wm-title[contenteditable="true"] {
+        background: rgba(255,255,255,0.5);
+        border-radius: 3px;
+        outline: none;
+        padding: 0 4px;
+        cursor: text;
+      }
+      .wm-body {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        position: relative;
+        display: flex;
+      }
+      .wm-resize {
+        position: absolute;
+        right: 0; bottom: 0;
+        width: 16px; height: 16px;
+        cursor: se-resize;
+        z-index: 2;
+      }
+      .wm-resize::after {
+        content: '';
+        position: absolute;
+        right: 3px; bottom: 3px;
+        width: 8px; height: 8px;
+        border-right: 2px solid #aaa;
+        border-bottom: 2px solid #aaa;
+      }
+      .wm-audio-ctrl {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        flex-shrink: 0;
+      }
+      .wm-mute {
+        width: 20px; height: 14px;
+        display: flex; align-items: center; justify-content: center;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 8px;
+        background: #c8c9cb;
+        color: #666;
+        flex-shrink: 0;
+        border: none;
+        padding: 0;
+        line-height: 1;
+      }
+      .wm-mute:hover { background: #aaa; color: #333; }
+      .wm-mute.muted { background: #e57373; color: #fff; }
+      .wm-vol {
+        width: 50px;
+        height: 3px;
+        cursor: pointer;
+        accent-color: #777;
+        flex-shrink: 0;
+      }
+      .wm-resize-sw {
+        position: absolute;
+        left: 0; bottom: 0;
+        width: 16px; height: 16px;
+        cursor: sw-resize;
+        z-index: 2;
+      }
+      .wm-resize-sw::after {
+        content: '';
+        position: absolute;
+        left: 3px; bottom: 3px;
+        width: 8px; height: 8px;
+        border-left: 2px solid #aaa;
+        border-bottom: 2px solid #aaa;
+      }
+
+      /* ── Toolkit panel ───────────────────────────────────────────────────── */
+      #toolkit-panel {
+        width: 100%; min-width: 0; flex: 1; min-height: 0;
+        background: #f0f2f5;
+        display: flex; flex-direction: column;
+        overflow: hidden;
+        font-family: Arial, sans-serif;
+      }
+      #toolkit-body { overflow-y: auto; }
+      #blockly-categories { overflow-y: auto; }
+      .toolkit-category {
+        padding: 8px 8px 3px;
+        font-size: 10px; font-weight: bold; letter-spacing: 0.8px;
+        color: #666; text-transform: uppercase;
+      }
+      .toolkit-btn {
+        display: flex; align-items: center; justify-content: space-between;
+        width: calc(100% - 16px); margin: 2px 8px; padding: 5px 7px;
+        background: #1565c0; color: #fff;
+        border: none; border-radius: 3px;
+        cursor: grab; font-size: 12px; font-family: Arial, sans-serif;
+        user-select: none; box-sizing: border-box;
+      }
+      .toolkit-btn:hover { background: #1976d2; }
+      .toolkit-btn:active { cursor: grabbing; background: #0d47a1; }
+      .toolkit-btn.dragging { opacity: 0.5; }
+      .toolkit-info { font-size: 10px; opacity: 0.7; margin-left: 4px; flex-shrink: 0; cursor: help; }
+      #blockly-categories { display: none; padding: 6px 0; }
+      .blockly-cat-btn {
+        display: block; width: calc(100% - 16px); margin: 3px 8px; padding: 6px 10px;
+        border: none; border-radius: 3px; cursor: pointer;
+        font-size: 12px; font-family: Arial, sans-serif; font-weight: bold;
+        text-align: left; color: #fff; user-select: none; box-sizing: border-box;
+      }
+      .blockly-cat-btn:hover { filter: brightness(1.2); }
+      .blockly-cat-btn:active { filter: brightness(0.88); }
+      #blockly-block-list { display: none; flex-direction: column; flex: 1; min-height: 0; }
+      .blockly-back-btn {
+        display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+        width: 100%; padding: 6px 10px;
+        border: none; border-bottom: 1px solid #d0d4de; cursor: pointer;
+        font-size: 11px; font-family: Arial, sans-serif; font-weight: bold;
+        background: #e4e8f0; color: #444; user-select: none; box-sizing: border-box;
+      }
+      .blockly-back-btn:hover { background: #d8dce8; }
+      #blockly-palette { flex: 1; min-height: 0; cursor: pointer; }
+      #toolkit-tooltip {
+        position: fixed; background: #222; color: #fff;
+        padding: 5px 9px; border-radius: 5px;
+        font-size: 11px; font-family: Arial, sans-serif;
+        max-width: 210px; white-space: normal; line-height: 1.4;
+        pointer-events: none; z-index: 9999; display: none;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+      }
+
+      /* ── Editor column ───────────────────────────────────────────────────── */
+      #editor-column {
+        flex: 1; min-width: 0;
+        display: flex; flex-direction: column;
+        overflow: hidden;
+      }
+      #editor-wrap {
+        flex: 1; min-height: 0;
+        position: relative;
+        display: flex; flex-direction: column;
+      }
+      #editor-wrap #editor { flex: 1; min-height: 0; }
+      .CodeMirror {
+        border-top: 1px solid #888;
+        border-bottom: 1px solid #888;
+        height: 100%;
+      }
+      #blockly-area {
+        flex: 1; min-height: 200px;
+        display: none; flex-direction: column;
+        border-top: 2px solid #1565c0;
+      }
+      #blockly-div { flex: 1; }
+
+      /* ── Canvas window ───────────────────────────────────────────────────── */
+      #fsContainer {
+        flex: 1 1 auto; min-height: 0;
+        display: flex; align-items: center; justify-content: center;
+        background: #000;
+      }
+      #fsContainer:fullscreen { background: #000; }
+      #fsContainer:fullscreen #canvasWrapper {
+        width: min(100vw, calc(100vh * 16 / 9)) !important;
+        height: min(100vh, calc(100vw * 9 / 16)) !important;
+      }
+      #canvasWrapper { position: relative; border-radius: 4px; overflow: hidden; }
+      #canvas {
+        position: absolute; top: 0; left: 0;
+        width: 100%; height: 100%;
+        z-index: 20;
+      }
+      /* Camera in its own window — fills the window body */
+      #camera {
+        width: 100%; height: 100%;
+        display: block; object-fit: cover;
+      }
+
+      /* ── Console window ──────────────────────────────────────────────────── */
+      #console-wrap {
+        flex: 1; display: flex; flex-direction: column;
+        padding: 6px 10px; background: #f5f5f5;
+        font-family: sans-serif; font-size: 13px;
+        overflow: hidden; width: 100%; box-sizing: border-box;
+      }
+      #console-label { margin: 0 0 4px; font-weight: bold; flex-shrink: 0; }
+      #console-label a { color: #555; }
+      #console {
+        flex: 1; overflow-y: scroll;
+        background: white; box-sizing: border-box;
+        padding: 8px 10px; border: 1px solid gray;
+        font-family: monospace; font-size: 13px;
+        white-space: pre-wrap; word-break: break-all;
+      }
+      #console .err { color: red; }
+
+      /* ── Inline widgets ──────────────────────────────────────────────────── */
+      .ar-color-swatch {
+        display: inline-block; width: 11px; height: 11px;
+        border-radius: 2px; border: 1px solid rgba(0,0,0,0.35);
+        cursor: pointer; position: relative; top: 1px;
+        margin-right: 2px; flex-shrink: 0;
+      }
+      .ar-color-swatch:hover { border-color: rgba(0,0,0,0.7); box-shadow: 0 0 0 1px rgba(255,255,255,0.5); }
+      .ar-color-swatch-ghost { background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f) !important; }
+      .ar-color-popup {
+        position: fixed; z-index: 9999;
+        background: #2a2a2a; border: 1px solid #444;
+        border-radius: 6px; padding: 8px; width: 188px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5); display: none;
+      }
+      .ar-cp-preview { width: 100%; height: 22px; border-radius: 3px; margin-bottom: 7px; border: 1px solid rgba(255,255,255,0.1); }
+      .ar-cp-row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+      .ar-cp-row span { color: #888; font-size: 10px; width: 10px; font-family: monospace; flex-shrink: 0; }
+      .ar-cp-row input[type="range"] {
+        flex: 1; height: 10px; border-radius: 5px;
+        border: 1px solid rgba(255,255,255,0.1); cursor: ew-resize;
+        -webkit-appearance: none; appearance: none; outline: none;
+      }
+      .ar-cp-row input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none; width: 14px; height: 14px;
+        border-radius: 50%; background: #fff;
+        border: 2px solid rgba(0,0,0,0.25); cursor: ew-resize;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      }
+      .ar-cp-hex {
+        width: 100%; background: #1a1a1a; border: 1px solid #555;
+        color: #ccc; padding: 3px 6px; border-radius: 3px;
+        font-family: monospace; font-size: 11px; margin-top: 2px;
+        box-sizing: border-box; outline: none;
+      }
+      .ar-cp-hex:focus { border-color: #7ab8ff; }
+      .ar-scrub {
+        cursor: ew-resize; user-select: none;
+        border-bottom: 1.5px dashed rgba(100,160,255,0.7);
+        color: #7ab8ff; font-family: inherit; font-size: inherit; padding: 0 1px;
+      }
+      .ar-scrub:hover { background: rgba(100,160,255,0.12); border-radius: 2px; }
+      .ar-scrub-active { background: rgba(100,160,255,0.22); border-radius: 2px; }
+    </style>
+  </head>
+
+  <body>
+    <div id="code_text" style="display: none">// Visual Live Coding IDE
+// Shader, Audio, Media, Vision
+
+const s = new Shader(`
+  let col = vec3f(uv.x, uv.y, sin(time) * 0.5 + 0.5);
+  return vec4f(col, 1.0);
+`);
+s.start();</div>
+
+    <!-- Menu -->
+    <nav>
+      <ul>
+        <li class="no-btn" style="padding:2px 0;">
+          <div id="modeToggle" title="Switch: Code ↔ Blocks">
+            <div class="mode-thumb"></div>
+            <div class="toggle-opt active" id="textModeBtn"><i class="fa-solid fa-code"></i></div>
+            <div class="toggle-opt" id="blocksModeBtn"><i class="fa-solid fa-puzzle-piece"></i></div>
+          </div>
+        </li>
+        <li id="micToggle" style="display:none;"><i class="fa-solid fa-microphone-slash"></i></li>
+        <li id="cameraToggle" style="display:none;"><i class="fa-solid fa-video-slash"></i></li>
+        <li id="cameraWrapper" class="no-btn" style="display:none;">
+          Camera: <select id="cameraSelect"></select>
+        </li>
+        <li class="sep"></li>
+        <li data-layout="split" title="Split layout (Ctrl+1)" class="active"><i class="fa-solid fa-table-columns"></i></li>
+        <li id="editorToggleBtn" title="Toggle code editor"><i class="fa-solid fa-file-code"></i></li>
+        <li id="consoleToggleBtn" title="Toggle console"><i class="fa-solid fa-terminal"></i></li>
+        <li id="sidebarBtn" title="API Toolbox"><i class="fa-solid fa-toolbox"></i></li>
+        <li id="helpBtn" title="API Quick Reference" style="margin-left:auto;"><i class="fa-solid fa-circle-question"></i></li>
+        <li id="execute" title="Run" class="btn-green"><i class="fa-solid fa-play"></i></li>
+        <li id="stopBtn" title="Stop" class="btn-red" style="display:none;"><i class="fa-solid fa-stop"></i></li>
+        <li id="clearCanvasBtn" title="Clear Canvas" style="display:none;"><i class="fa-solid fa-eraser"></i></li>
+      </ul>
+    </nav>
+
+    <!-- Desktop: all windows live here -->
+    <div id="desktop">
+
+      <!-- Toolkit window -->
+      <div class="wm-win" id="win-toolkit">
+        <div class="wm-titlebar">
+          <span class="wm-title">API Toolbox</span>
+          <span class="wm-btn wm-max" title="Maximize"><i class="fa-regular fa-window-maximize"></i></span>
+          <span class="wm-btn wm-close" title="Close">×</span>
+        </div>
+        <div class="wm-body">
+          <div id="toolkit-panel">
+            <div id="toolkit-body"></div>
+            <div id="blockly-categories"></div>
+            <div id="blockly-block-list">
+              <button class="blockly-back-btn" id="blockly-back-btn">← Back</button>
+              <div id="blockly-palette"></div>
+            </div>
+          </div>
+        </div>
+        <div class="wm-resize-sw"></div>
+        <div class="wm-resize"></div>
+      </div>
+
+      <!-- Editor window -->
+      <div class="wm-win" id="win-editor">
+        <div class="wm-titlebar">
+          <span class="wm-title">Editor</span>
+          <span class="wm-btn wm-max" title="Maximize"><i class="fa-regular fa-window-maximize"></i></span>
+          <span class="wm-btn wm-close" title="Close">×</span>
+        </div>
+        <div class="wm-body">
+          <div id="editor-column">
+            <div id="editor-wrap">
+              <div id="editor"></div>
+            </div>
+            <div id="blockly-area">
+              <div id="blockly-div"></div>
+            </div>
+          </div>
+        </div>
+        <div class="wm-resize-sw"></div>
+        <div class="wm-resize"></div>
+      </div>
+
+      <!-- Output window (hidden until code runs) -->
+      <div class="wm-win" id="win-canvas" style="display:none;">
+        <div class="wm-titlebar">
+          <span class="wm-title">Output</span>
+          <span class="wm-btn wm-max" title="Maximize"><i class="fa-regular fa-window-maximize"></i></span>
+          <span class="wm-btn wm-close" title="Close">×</span>
+        </div>
+        <div class="wm-body" style="flex-direction:column;">
+          <div id="fsContainer">
+            <div id="canvasWrapper">
+              <canvas id="canvas" height="900" width="1600"></canvas>
+            </div>
+          </div>
+        </div>
+        <div class="wm-resize-sw"></div>
+        <div class="wm-resize"></div>
+      </div>
+
+      <!-- Camera window (hidden until camera toggle activated) -->
+      <div class="wm-win" id="win-camera" style="display:none;">
+        <div class="wm-titlebar">
+          <span class="wm-title">Camera</span>
+          <span class="wm-btn wm-max" title="Maximize"><i class="fa-regular fa-window-maximize"></i></span>
+          <span class="wm-btn wm-close" title="Close">×</span>
+        </div>
+        <div class="wm-body" style="background:#000;">
+          <canvas id="camera" height="900" width="1600"></canvas>
+        </div>
+        <div class="wm-resize-sw"></div>
+        <div class="wm-resize"></div>
+      </div>
+
+      <!-- Mic visualizer window (hidden until mic toggle activated) -->
+      <div class="wm-win" id="win-mic" style="display:none;">
+        <div class="wm-titlebar">
+          <span class="wm-title">Mic</span>
+          <span class="wm-btn wm-max" title="Maximize"><i class="fa-regular fa-window-maximize"></i></span>
+          <span class="wm-btn wm-close" title="Close">×</span>
+        </div>
+        <div class="wm-body" style="background:#111;">
+          <div id="mic-viz-wrap" style="width:100%; height:100%; display:flex; align-items:center;">
+            <canvas id="mic-viz" height="64" style="width:100%; display:block;"></canvas>
+          </div>
+        </div>
+        <div class="wm-resize-sw"></div>
+        <div class="wm-resize"></div>
+      </div>
+
+      <!-- Console window (hidden until output is logged) -->
+      <div class="wm-win" id="win-console" style="display:none;">
+        <div class="wm-titlebar">
+          <span class="wm-title">Console</span>
+          <span class="wm-btn wm-max" title="Maximize"><i class="fa-regular fa-window-maximize"></i></span>
+          <span class="wm-btn wm-close" title="Close">×</span>
+        </div>
+        <div class="wm-body">
+          <div id="console-wrap">
+            <p id="console-label">Console (<a href="javascript:clearConsole();">Clear</a>):</p>
+            <div id="console"></div>
+          </div>
+        </div>
+        <div class="wm-resize-sw"></div>
+        <div class="wm-resize"></div>
+      </div>
+
+    </div><!-- #desktop -->
+
+    <!-- Help / Cheatsheet Modal -->
+    <div id="help-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:10000; overflow-y:auto; padding:24px 16px;">
+      <div style="max-width:860px; margin:0 auto; background:#1a1a2e; color:#e0e0e0; border-radius:8px; padding:28px 32px; font-family:Arial,sans-serif; font-size:13px; line-height:1.6; position:relative;">
+        <button id="help-close" style="position:absolute; top:14px; right:18px; background:none; border:none; color:#888; font-size:20px; cursor:pointer; line-height:1">✕</button>
+        <h2 style="margin:0 0 18px; color:#7ab8ff; font-size:17px; letter-spacing:1px;">API QUICK REFERENCE</h2>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Pattern Syntax</h3>
+        <table style="width:100%; border-collapse:collapse; font-size:12px;">
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">"C4 E4 G4"</td><td style="padding:3px 0; color:#ccc;">Space-separated — equally spaced across one measure</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">"~ . x"</td><td style="padding:3px 0; color:#ccc;">Rest — <code style="background:#222;padding:1px 3px;border-radius:2px;">~</code> or <code style="background:#222;padding:1px 3px;border-radius:2px;">.</code> are silences; <code style="background:#222;padding:1px 3px;border-radius:2px;">x</code> = generic trigger</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">"C4 [E4 G4]"</td><td style="padding:3px 0; color:#ccc;"><code style="background:#222;padding:1px 3px;border-radius:2px;">[ ]</code> groups share one time slot — E4 G4 play twice as fast</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">"&lt;C4 G3&gt; E4"</td><td style="padding:3px 0; color:#ccc;"><code style="background:#222;padding:1px 3px;border-radius:2px;">&lt; &gt;</code> alternates each cycle — C4 on cycle 0, G3 on cycle 1</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">"C4*3 G4"</td><td style="padding:3px 0; color:#ccc;"><code style="background:#222;padding:1px 3px;border-radius:2px;">*N</code> repeats N times inside that slot</td></tr>
+        </table>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Pattern API</h3>
+        <table style="width:100%; border-collapse:collapse; font-size:12px;">
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">pat(str, synth)</td><td style="padding:3px 0; color:#ccc;">Create pattern from mini-notation + synth or callback fn</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">.speed(n)</td><td style="padding:3px 0; color:#ccc;">Play n× faster (e.g. .speed(2) = double time)</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">.slow(n)</td><td style="padding:3px 0; color:#ccc;">Play n× slower</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">.euclid(k, n)</td><td style="padding:3px 0; color:#ccc;">Distribute k hits across n equal steps (Euclidean rhythm)</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">.every(n, fn)</td><td style="padding:3px 0; color:#ccc;">Apply fn(events, cycle) every n cycles; return modified events</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">.start() / .stop()</td><td style="padding:3px 0; color:#ccc;">Start/stop the pattern loop</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">stack(p1, p2, …)</td><td style="padding:3px 0; color:#ccc;">Layer patterns; call .bpm(120).start() on result</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">pat(str, (note, time, dur) =&gt; {})</td><td style="padding:3px 0; color:#ccc;">Callback form — full control; route to multiple synths</td></tr>
+        </table>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Synths</h3>
+        <table style="width:100%; border-collapse:collapse; font-size:12px;">
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.synth(opts)</td><td style="padding:3px 0; color:#ccc;">Basic oscillator</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.poly(opts)</td><td style="padding:3px 0; color:#ccc;">Polyphonic — play chord arrays</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.fm(opts)</td><td style="padding:3px 0; color:#ccc;">FM synthesis — metallic/electric tones</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.am(opts)</td><td style="padding:3px 0; color:#ccc;">AM synthesis</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.pluck(opts)</td><td style="padding:3px 0; color:#ccc;">Karplus-Strong plucked string</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.kick(opts)</td><td style="padding:3px 0; color:#ccc;">Membrane synth — kick / tom drums</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.metal(opts)</td><td style="padding:3px 0; color:#ccc;">Metallic — hi-hats, cymbals (no note arg)</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.noise(opts)</td><td style="padding:3px 0; color:#ccc;">White noise (no note arg)</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">s.play(note, dur, time?)</td><td style="padding:3px 0; color:#ccc;">Trigger synth — dur: '8n', '4n', '1n', or seconds</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">s.chain(fx1, fx2)</td><td style="padding:3px 0; color:#ccc;">Route synth through effects in series to output</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">s.connect(fx)</td><td style="padding:3px 0; color:#ccc;">Route synth to single effect</td></tr>
+        </table>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Effects</h3>
+        <table style="width:100%; border-collapse:collapse; font-size:12px;">
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.reverb(decay)</td><td style="padding:3px 0; color:#ccc;">Reverb — decay in seconds</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.delay(time, feedback)</td><td style="padding:3px 0; color:#ccc;">Feedback delay — time in sec, feedback 0–1</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.distort(amount)</td><td style="padding:3px 0; color:#ccc;">Distortion 0–1</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.chorus(freq, delay, depth)</td><td style="padding:3px 0; color:#ccc;">Chorus effect</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.filter(type, freq, Q)</td><td style="padding:3px 0; color:#ccc;">Filter — types: lowpass highpass bandpass notch</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.autoFilter(rate)</td><td style="padding:3px 0; color:#ccc;">LFO-swept filter — rate in Hz</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.vibrato(freq, depth)</td><td style="padding:3px 0; color:#ccc;">Pitch wobble</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.tremolo(freq, depth)</td><td style="padding:3px 0; color:#ccc;">Volume wobble</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.phaser(rate, octaves)</td><td style="padding:3px 0; color:#ccc;">Phase shifting</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.wah(baseFreq)</td><td style="padding:3px 0; color:#ccc;">Auto-wah</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.pitchShift(semitones)</td><td style="padding:3px 0; color:#ccc;">Pitch shift up/down</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.compressor(threshold, ratio)</td><td style="padding:3px 0; color:#ccc;">Dynamic range control</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.eq(low, mid, high)</td><td style="padding:3px 0; color:#ccc;">3-band EQ in dB</td></tr>
+        </table>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Scales &amp; Modulation</h3>
+        <table style="width:100%; border-collapse:collapse; font-size:12px;">
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.scale('C4', 'minor')</td><td style="padding:3px 0; color:#ccc;">Returns note array for scale — names: major minor dorian phrygian lydian mixolydian pentatonic blues chromatic</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.note(scaleArr, degree)</td><td style="padding:3px 0; color:#ccc;">Pick scale note by degree index (wraps around)</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.lfo(freq, min, max)</td><td style="padding:3px 0; color:#ccc;">LFO signal — connect to synth param: lfo.connect(s._.frequency)</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.meter()</td><td style="padding:3px 0; color:#ccc;">RMS amplitude meter — use s.chain(m); then m.getValue() each frame</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.analyser(bins)</td><td style="padding:3px 0; color:#ccc;">FFT analyser — use s.chain(a); then a.getValue() → Float32Array</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.bpm(120)</td><td style="padding:3px 0; color:#ccc;">Set transport tempo</td></tr>
+          <tr><td style="padding:3px 8px 3px 0; color:#aaa; white-space:nowrap; font-family:monospace;">audio.volume(-6)</td><td style="padding:3px 0; color:#ccc;">Master output volume in dB</td></tr>
+        </table>
+
+        <h3 style="color:#88ccff; margin:18px 0 8px; font-size:12px; letter-spacing:1px; text-transform:uppercase; border-bottom:1px solid #333; padding-bottom:4px;">Audio → Visual (non-visualizer)</h3>
+        <div style="font-size:12px; color:#bbb; line-height:1.7;">
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Beat as state machine:</strong> Each pat() callback fires at precise musical times — use it to advance a CA, flip a palette, emit a particle burst. Audio is the clock, not the picture.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Amplitude as physics force:</strong> <code style="background:#222;padding:1px 4px;border-radius:2px;">meter.getValue()</code> → dB → convert with <code style="background:#222;padding:1px 4px;border-radius:2px;">Math.pow(10, db/20)</code> → feed to gravity, repulsion, blur strength, shader uniform.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Note value as index:</strong> The <code style="background:#222;padding:1px 4px;border-radius:2px;">note</code> string in a callback can select palette index, drawing mode, CA rule — anything discrete.</p>
+          <p style="margin:4px 0;"><strong style="color:#e0e0e0;">Shared parameter:</strong> The same variable that drives synth detune can drive visual distortion magnitude — change one number, both domains shift.</p>
+        </div>
+
+        <p style="margin:20px 0 0; color:#555; font-size:11px; text-align:right;">Press <kbd style="background:#333;padding:2px 5px;border-radius:3px;border:1px solid #555;">?</kbd> or <kbd style="background:#333;padding:2px 5px;border-radius:3px;border:1px solid #555;">Esc</kbd> to close</p>
+      </div>
+    </div>
+
+    <!-- CodeMirror JavaScript -->
+    <script src="src/editor/cm/lib/codemirror.js"></script>
+    <script src="src/editor/cm/addon/lint/lint.js"></script>
+    <script src="src/editor/cm/addon/lint/jshint.js"></script>
+    <script src="src/editor/cm/addon/lint/javascript-lint.js"></script>
+    <script src="src/editor/cm/mode/javascript/javascript.js"></script>
+    <script src="src/editor/cm/addon/hint/show-hint.js"></script>
+    <script src="src/editor/cm/addon/hint/javascript-hint.js"></script>
+    <script src="src/editor/cm/addon/edit/closebrackets.js"></script>
+    <script src="src/editor/cm/addon/edit/matchbrackets.js"></script>
+    <script src="src/editor/cm/addon/edit/trailingspace.js"></script>
+    <script src="src/editor/cm/addon/selection/active-line.js"></script>
+    <script src="src/editor/cm/addon/fold/foldcode.js"></script>
+    <script src="src/editor/cm/addon/fold/brace-fold.js"></script>
+    <script src="src/editor/cm/addon/fold/foldgutter.js"></script>
+
+    <!-- App JavaScript -->
+    <script type="module" src="/src/runtime/app.js"></script>
+  </body>
+</html>
