@@ -12,20 +12,25 @@ A live coding environment for creating audiovisual experiences in the browser �
 ## What you can make
 
 - **GPU shaders** — full-screen WebGPU/WGSL fragment shaders (`Shader`) or WebGL/GLSL (`GLShader`, all browsers, ShaderToy paste-in) with `time`, `uv`, `mouse`, and custom uniforms
+- **3D scenes** — Three.js via `ThreeScene` + full `THREE` namespace; tick loop, z-layering, signal binding, opacity — composable with shaders and draw
 - **PIXI.js** — WebGL scene graph for sprites, particles, rich text, per-object filters, and hit-testing; layers cleanly with shaders and draw
-- **Audio synthesis** — synths, sequencers, effects chains via [Tone.js](https://tonejs.github.io/)
+- **Render pipeline** — chain visual stages with `pipe(source).ascii().glshader().fx('hue-rotate(90deg)').subtitle(srt).show()`; sources: camera, canvas, video, shader; stages compose freely
+- **Audio synthesis** — synths, sequencers, effects chains via [Tone.js](https://tonejs.github.io/); pattern sequencing with a [Strudel](https://strudel.cc/) / [TidalCycles](https://tidalcycles.org/)-inspired mini-notation and composable `Pattern` algebra (`pat("bd*2 sd").fast(2).every(4, p => p.rev()).start()`)
+- **Audio visualization** — live spectrogram, piano roll, and EQ widget (draggable frequency curve over live FFT); `audio.fft.bass/mid/high` as control signals
+- **MIDI** — Web MIDI input: `midi.onNote(fn)`, `midi.onCC(ch, cc, fn)`, `midi.signal(ch, cc)` → live 0–1 signal wired to anything
 - **Voice & TTS** — recognize spoken words with `audio.onWord()` / `audio.onSpeech()`, speak with `audio.say()`
 - **Camera + vision** — react to hand gestures, facial expressions, and detected objects via [MediaPipe](https://github.com/google-ai-edge/mediapipe)
-- **Signal bus** — any live signal (mic level, mouse position, camera brightness, device motion, gamepad axis) can drive any sink (shader uniform, filter cutoff, draw parameter, pattern speed). `audio.level`, `video.signal`, `sensors.mouse/keyboard/gamepad/motion/geo/network/battery` all follow the same live-getter + edge-trigger pattern
-- **Media layers** — image and video overlaid on the canvas with z-ordering
-- **2D canvas** — draw on z-indexed layers with CSS filter effects (blur, hue, brightness, etc.)
+- **Signal bus** — any live signal (mic level, mouse position, camera brightness, device motion, gamepad axis, MIDI CC, external weather/API) drives any sink (shader uniform, filter cutoff, draw parameter, pattern speed). `audio.level`, `video.signal`, `sensors.mouse/keyboard/gamepad/motion/geo/network/battery`, `external.weather/signal` all follow the same live-getter + `.stream(fn)` + edge-trigger pattern
+- **Media layers** — image and video overlaid on the canvas with z-ordering; SRT subtitle overlay via render pipeline
+- **2D canvas** — draw on z-indexed layers with CSS filter effects; rich text with stroke, shadow, gradient, and web fonts (`draw.loadFont`)
 - **Window management** — spawn floating windows (image, video, camera, canvas, shader, HTML), browse local directories, move/resize/maximize from code (`wm.spawn`, `wm.browse`, `wm.layout`, etc.); manage desktop file icons with `desktop.add/onFile/files`
 
 ## Editor features
 
-- [CodeMirror 5](https://codemirror.net/5/) with syntax highlighting, bracket matching, code folding, and inline widgets
+- [CodeMirror 6](https://codemirror.net/) with syntax highlighting, bracket matching, code folding, and inline widgets
   - **Color swatches** — click any color string to open an HSL picker; edits write back to the source
   - **Number scrubbers** — drag any numeric literal to change its value live
+  - **Syntax linting** — squiggles + hover tooltips on parse errors; runtime error highlights
 - **Blocks panel** (toggle on/off) — visual [Blockly](https://developers.google.com/blockly) workspace for Audio, Shader, GLShader, PIXI, Vision, Canvas, and Media blocks; coexists with the text editor
 - **API drawer** (toggle on/off) — drag-to-text code snippets for every API
 - Infinite loop protection ([Esprima](https://esprima.org/))
@@ -121,7 +126,45 @@ vision.onGesture('Thumb_Up', () => { /* ... */ });
 const face = vision.face(); // { expression, cx, cy, landmarks }
 
 // 2D draw API (layer 0)
-draw.bg('#000').circle(400, 300, 50, 'red').text('hi', 100, 100);
+draw.bg('#000').circle(400, 300, 50, 'red');
+draw.text('HELLO', 400, 300, 72, '#fff', {
+  stroke: true, strokeColor: '#f0f', strokeWidth: 3,
+  shadow: true, shadowBlur: 20, shadowColor: '#f0f',
+  gradient: ['#f0f', '#0ff'],
+});
+await draw.loadFont('Orbitron', 'https://fonts.gstatic.com/...');
+draw.text('SPACE', 400, 400, 48, '#0ff', { font: 'Orbitron' });
+
+// Render pipeline — chain visual stages
+const cam = await Camera.open();
+pipe(cam).ascii({ cols: 120, color: '#0f0', bg: '#000' }).show('ASCII Cam');
+pipe(cam).glshader(`
+  vec4 c = texture2D(uVideo, uv);
+  gl_FragColor = vec4(c.b, c.r, c.g, 1.0);
+`).show('Channel Swap');
+
+// Video with SRT subtitles
+const vid = await Media.video('clip.mp4');
+pipe(vid).subtitle(srtString, { fontSize: 28 }).show('Subtitled');
+
+// Three.js 3D scene
+const scene = new ThreeScene({ w: 800, h: 600 }).start();
+const mesh = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshNormalMaterial()
+);
+scene.add(mesh);
+scene.tick(({ time }) => { mesh.rotation.y = time; });
+
+// MIDI
+await midi.open();
+midi.onNote((note, vel, ch) => audio.synth().play(note, '8n'));
+midi.onCC(1, 74, v => shader.set(v)); // CC 74 → shader uniform
+const cutoff = midi.signal(1, 74);    // live 0–1 signal
+
+// External data signals
+const wx = external.weather(37.77, -122.41);
+wx.stream(w => draw.text(`${w.temp}°C`, 50, 50));
 
 // Raw canvas layers
 const ctx = getCanvas(0).getContext('2d');

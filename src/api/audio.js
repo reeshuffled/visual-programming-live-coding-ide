@@ -115,17 +115,45 @@ export function startAudio() {
   return Tone.start();
 }
 
-// ── Mini-notation parser ──────────────────────────────────────────────────
+// ── Deep Strudel — Pattern algebra ────────────────────────────────────────
+//
+// Pattern: (cycleNum) → [{value, time, dur, gain?, pan?}]
+// All time/dur values are normalized to [0,1] within one cycle.
+// Transforms return new Patterns (immutable). .start(inst?) kicks off scheduling.
+//
+// Mini-notation:
+//   spaces=steps   []=group   <>=alternate   *N=repeat   !=N replicate   @N=weight
+//   ?=degrade(0.5)   ,=simultaneous   {}%N=polymeter   0..7=range   ~/.=rest
+
+// ── Tokenizer ─────────────────────────────────────────────────────────────
 
 function _tokenizeMini(str) {
+  // Expand integer ranges: 0..7 → "0 1 2 3 4 5 6 7"
+  str = str.replace(/(-?\d+)\.\.(-?\d+)/g, (_, a, b) => {
+    const lo = +a, hi = +b, step = lo <= hi ? 1 : -1;
+    const out = [];
+    for (let i = lo; step > 0 ? i <= hi : i >= hi; i += step) out.push(i);
+    return out.join(' ');
+  });
   const tokens = [];
   let i = 0;
   while (i < str.length) {
     if (/\s/.test(str[i])) { i++; continue; }
-    if ("[]<>".includes(str[i])) { tokens.push(str[i++]); }
-    else {
+    const ch = str[i];
+    if ('[]<>{},'.includes(ch)) {
+      tokens.push(ch);
+      i++;
+      // After }, check for %N polymeter step count
+      if (ch === '}' && str[i] === '%') {
+        i++;
+        let j = i;
+        while (j < str.length && /\d/.test(str[j])) j++;
+        tokens.push('%' + str.slice(i, j));
+        i = j;
+      }
+    } else {
       let j = i;
-      while (j < str.length && !/[\s\[\]<>]/.test(str[j])) j++;
+      while (j < str.length && !/[\s\[\]<>{},]/.test(str[j])) j++;
       tokens.push(str.slice(i, j));
       i = j;
     }
@@ -133,54 +161,250 @@ function _tokenizeMini(str) {
   return tokens;
 }
 
+// ── Parser ────────────────────────────────────────────────────────────────
+
 function _parseMiniTokens(tokens) {
   let pos = 0;
+
   function parseItems(end) {
-    const items = [];
-    while (pos < tokens.length && tokens[pos] !== end) {
+    const raw = [];
+    while (pos < tokens.length) {
       const t = tokens[pos];
-      if (t === "[") { pos++; items.push({ type: "group", items: parseItems("]") }); pos++; }
-      else if (t === "<") { pos++; items.push({ type: "alt", items: parseItems(">") }); pos++; }
-      else {
+      if (end !== null && t === end) break;
+      if (end === null && (t === ']' || t === '>' || t === '}' || t?.startsWith('%'))) break;
+
+      if (t === '[') {
         pos++;
-        const repM = t.match(/\*(\d+)$/);
-        const val = t.replace(/\*\d+$/, "");
-        items.push({ type: "atom", value: val, repeat: repM ? +repM[1] : 1 });
+        raw.push({ type: 'group', items: parseItems(']') });
+        if (tokens[pos] === ']') pos++;
+      } else if (t === '<') {
+        pos++;
+        raw.push({ type: 'alt', items: parseItems('>') });
+        if (tokens[pos] === '>') pos++;
+      } else if (t === '{') {
+        pos++;
+        const sub = parseItems('}');
+        if (tokens[pos] === '}') pos++;
+        let steps = 4;
+        if (tokens[pos]?.startsWith('%')) { steps = +tokens[pos].slice(1) || 4; pos++; }
+        raw.push({ type: 'polymeter', items: sub, steps });
+      } else if (t === ',') {
+        pos++;
+        raw.push({ type: '_sep' });
+      } else {
+        pos++;
+        let val = t, repeat = 1, weight = 1, degrade = false;
+        // *N repeat
+        const rm = val.match(/\*(\d+)$/); if (rm) { repeat = +rm[1]; val = val.slice(0, -rm[0].length); }
+        // !N replicate (default 2)
+        const im = val.match(/!(\d*)$/);  if (im) { repeat = +im[1] || 2; val = val.slice(0, -im[0].length); }
+        // @N weight (duration multiplier)
+        const wm = val.match(/@(\d*\.?\d+)$/); if (wm) { weight = +wm[1]; val = val.slice(0, -wm[0].length); }
+        // ? degrade (optional probability)
+        const dm = val.match(/\?(\d*\.?\d*)$/); if (dm) { degrade = dm[1] ? +dm[1] : 0.5; val = val.slice(0, -dm[0].length); }
+        raw.push({ type: 'atom', value: val, repeat, weight, degrade });
       }
     }
-    return items;
+    // Convert _sep markers to poly groups
+    if (raw.some(r => r.type === '_sep')) {
+      const groups = [];
+      let cur = [];
+      for (const r of raw) {
+        if (r.type === '_sep') { groups.push(cur); cur = []; } else cur.push(r);
+      }
+      groups.push(cur);
+      return groups.length > 1 ? [{ type: 'poly', groups }] : groups[0] ?? [];
+    }
+    return raw;
   }
+
   return parseItems(null);
 }
 
-function _flattenMini(items, totalDur, cycleNum) {
-  const slots = items.reduce((s, it) => s + (it.type === "atom" ? it.repeat : 1), 0);
-  if (slots === 0) return [];
-  const slotDur = totalDur / slots;
-  const events = [];
-  let offset = 0;
+// ── Flatten (normalized [0,1] events) ────────────────────────────────────
+
+function _itemWeight(it) {
+  return it.type === 'atom' ? it.weight * it.repeat : 1;
+}
+
+function _atomValues(items) {
+  const vals = [];
   for (const it of items) {
-    if (it.type === "atom") {
-      if (it.value !== "~" && it.value !== ".") {
+    if (it.type === 'atom' && it.value !== '~' && it.value !== '.') {
+      for (let r = 0; r < it.repeat; r++) vals.push(it.value);
+    } else if (it.type === 'group' || it.type === 'alt') {
+      vals.push(..._atomValues(it.items));
+    } else if (it.type === 'poly') {
+      for (const g of it.groups) vals.push(..._atomValues(g));
+    }
+  }
+  return vals;
+}
+
+function _flattenPat(items, cycleNum) {
+  const total = items.reduce((s, it) => s + _itemWeight(it), 0);
+  if (total === 0) return [];
+  const events = [];
+  let off = 0;
+  for (const it of items) {
+    const slot = _itemWeight(it) / total;
+    if (it.type === 'atom') {
+      const aDur = slot / it.repeat;
+      if (it.value !== '~' && it.value !== '.') {
         for (let r = 0; r < it.repeat; r++) {
-          events.push({ value: it.value, time: offset + r * slotDur, dur: slotDur });
+          if (!it.degrade || Math.random() >= it.degrade)
+            events.push({ value: it.value, time: off + r * aDur, dur: aDur });
         }
       }
-      offset += slotDur * it.repeat;
-    } else if (it.type === "group") {
-      _flattenMini(it.items, slotDur, cycleNum)
-        .forEach((e) => events.push({ ...e, time: e.time + offset }));
-      offset += slotDur;
-    } else if (it.type === "alt") {
-      const chosen = it.items[cycleNum % it.items.length];
-      if (chosen) {
-        _flattenMini([chosen], slotDur, cycleNum)
-          .forEach((e) => events.push({ ...e, time: e.time + offset }));
+      off += slot;
+    } else if (it.type === 'group') {
+      _flattenPat(it.items, cycleNum)
+        .forEach(e => events.push({ ...e, time: e.time * slot + off, dur: e.dur * slot }));
+      off += slot;
+    } else if (it.type === 'alt') {
+      if (it.items.length) {
+        const chosen = it.items[cycleNum % it.items.length];
+        _flattenPat([chosen], cycleNum)
+          .forEach(e => events.push({ ...e, time: e.time * slot + off, dur: e.dur * slot }));
       }
-      offset += slotDur;
+      off += slot;
+    } else if (it.type === 'poly') {
+      // All groups sound simultaneously in this slot
+      for (const grp of it.groups) {
+        _flattenPat(grp, cycleNum)
+          .forEach(e => events.push({ ...e, time: e.time * slot + off, dur: e.dur * slot }));
+      }
+      off += slot;
+    } else if (it.type === 'polymeter') {
+      // N steps per cycle cycling through inner items
+      const vals = _atomValues(it.items);
+      if (vals.length) {
+        const stepDur = slot / it.steps;
+        for (let s = 0; s < it.steps; s++) {
+          const idx = (cycleNum * it.steps + s) % vals.length;
+          events.push({ value: vals[idx], time: off + s * stepDur, dur: stepDur });
+        }
+      }
+      off += slot;
     }
   }
   return events;
+}
+
+// ── Pattern class ─────────────────────────────────────────────────────────
+
+function _pp(q) { return new Pattern(q); }
+
+function _xpNote(val, n) {
+  if (!/^[A-Ga-g]/.test(val)) return val;
+  try { return _midiToNote(Tone.Frequency(val).toMidi() + n); } catch (_) { return val; }
+}
+
+function _firePat(inst, value, time, dur, gain) {
+  if (!inst) return;
+  if (inst instanceof Instrument) {
+    const inner = inst._;
+    const noNote = inner instanceof Tone.NoiseSynth || inner instanceof Tone.MetalSynth;
+    const vel = gain !== undefined ? Math.max(0, Math.min(1, gain)) : undefined;
+    if (noNote) inner.triggerAttackRelease(dur, time, vel);
+    else {
+      const note = /^[A-G]/i.test(value) ? value : 'C4';
+      inner.triggerAttackRelease(note, dur, time, vel);
+    }
+  } else if (typeof inst === 'function') {
+    inst(value, time, dur);
+  }
+}
+
+export class Pattern {
+  constructor(q) {
+    this._q  = q;
+    this._cn = 0;
+    this._loop = null;
+    this._inst = null;
+    this._ct   = '1m';
+  }
+
+  // ── Transforms (return new Pattern) ─────────────────────────────────────
+
+  fast(n)  { return _pp(c => this._q(c).map(e => ({ ...e, time: e.time / n, dur: e.dur / n }))); }
+  slow(n)  { return this.fast(1 / n); }
+  speed(n) { return this.fast(n); }
+  rev()    { return _pp(c => this._q(c).map(e => ({ ...e, time: 1 - e.time - e.dur })).sort((a, b) => a.time - b.time)); }
+
+  add(n)    { return _pp(c => this._q(c).map(e => ({ ...e, value: _xpNote(e.value, n) }))); }
+  gain(v)   { return _pp(c => this._q(c).map(e => ({ ...e, gain: (e.gain ?? 1) * v }))); }
+  pan(v)    { return _pp(c => this._q(c).map(e => ({ ...e, pan: v }))); }
+
+  note(scale) {
+    return _pp(c => this._q(c).map(e => {
+      const d = +e.value;
+      return { ...e, value: !isNaN(d) ? (scale[((d % scale.length) + scale.length) % scale.length] ?? e.value) : e.value };
+    }));
+  }
+
+  off(t, fn) {
+    return _pp(c => [
+      ...this._q(c),
+      ...fn(this)._q(c).map(e => ({ ...e, time: (e.time + t + 1) % 1 })),
+    ].sort((a, b) => a.time - b.time));
+  }
+
+  jux(fn) {
+    return _pp(c => [...this.pan(0)._q(c), ...fn(this).pan(1)._q(c)]);
+  }
+
+  every(n, fn) { return _pp(c => c % n === 0 ? fn(this)._q(c) : this._q(c)); }
+
+  sometimesBy(p, fn) {
+    return _pp(c => {
+      const base = this._q(c), mod = fn(this)._q(c);
+      return base.map((e, i) => Math.random() < p ? (mod[i] ?? e) : e);
+    });
+  }
+  sometimes(fn) { return this.sometimesBy(0.5, fn); }
+  often(fn)     { return this.sometimesBy(0.75, fn); }
+  rarely(fn)    { return this.sometimesBy(0.25, fn); }
+
+  degrade()    { return _pp(c => this._q(c).filter(() => Math.random() > 0.5)); }
+  degradeBy(p) { return _pp(c => this._q(c).filter(() => Math.random() > p)); }
+
+  euclid(k, n, rot = 0) {
+    return _pp(c => {
+      const gate = _euclidRhythm(k, n);
+      const r = [...gate.slice(rot), ...gate.slice(0, rot)];
+      const evs = this._q(c);
+      const dur = 1 / n;
+      return r.map((on, i) => on
+        ? { value: evs[i % Math.max(evs.length, 1)]?.value ?? 'x', time: i * dur, dur }
+        : null
+      ).filter(Boolean);
+    });
+  }
+
+  bpm(v) { Tone.getTransport().bpm.value = v; return this; }
+
+  // ── Scheduling ───────────────────────────────────────────────────────────
+
+  start(inst) {
+    if (inst !== undefined) this._inst = inst;
+    this._cn = 0;
+    const getCyc = () => Tone.Time(this._ct).toSeconds();
+    const loop = track(new Tone.Loop((t) => {
+      const cs = getCyc();
+      this._q(this._cn++).forEach(({ value, time: tt, dur, gain }) => {
+        _firePat(this._inst, value, t + tt * cs, dur * cs, gain);
+      });
+    }, getCyc()));
+    loop.start(0);
+    this._loop = loop;
+    return this;
+  }
+
+  stop() {
+    if (this._loop) { this._loop.stop(); this._loop = null; }
+    return this;
+  }
 }
 
 // Distribute k hits across n steps (Bresenham/Euclidean)
@@ -790,63 +1014,27 @@ class AudioAPI {
   }
 
   // ── Pattern scheduling ───────────────────────────────────────────────────
+
+  // pat(str, instrument?, opts?) → Pattern
+  // Transforms: .fast(n) .slow(n) .rev() .add(n) .gain(v) .pan(v) .note(scale)
+  //             .off(t,fn) .jux(fn) .every(n,fn) .sometimesBy(p,fn) .sometimes/often/rarely(fn)
+  //             .degrade() .degradeBy(p) .euclid(k,n,rot?) .bpm(v)
+  // Scheduling: .start(inst?) .stop()
   pat(str, instrument, opts = {}) {
     const parsed = _parseMiniTokens(_tokenizeMini(str));
-    const cycleTime = opts.cycle ?? "1m";
-    let _speed = 1, _slow = 1;
-    let _euclidK = null, _euclidN = null;
-    let _everyN = null, _everyFn = null;
-    let _loop = null, _cycleNum = 0;
-
-    const fire = (value, time, dur) => {
-      if (!instrument) return;
-      if (instrument instanceof Instrument) {
-        const inner = instrument._;
-        const noNote = inner instanceof Tone.NoiseSynth || inner instanceof Tone.MetalSynth;
-        if (noNote) inner.triggerAttackRelease(dur, time);
-        else inner.triggerAttackRelease(/^[A-G]/.test(value) ? value : "C1", dur, time);
-      } else if (typeof instrument === "function") {
-        instrument(value, time, dur);
-      }
-    };
-
-    const api = {
-      speed(n)       { _speed = n; return api; },
-      slow(n)        { _slow = n; return api; },
-      euclid(k, n)   { _euclidK = k; _euclidN = n; return api; },
-      every(n, fn)   { _everyN = n; _everyFn = fn; return api; },
-      start() {
-        const cycleSecs = (Tone.Time(cycleTime).toSeconds() / _speed) * _slow;
-        _loop = track(new Tone.Loop((time) => {
-          let events = _flattenMini(parsed, cycleSecs, _cycleNum);
-          if (_euclidK !== null) {
-            const gate = _euclidRhythm(_euclidK, _euclidN);
-            const stepDur = cycleSecs / _euclidN;
-            const vals = events.length ? events.map((e) => e.value) : ["x"];
-            events = gate
-              .map((on, i) => on ? { value: vals[i % vals.length], time: i * stepDur, dur: stepDur } : null)
-              .filter(Boolean);
-          }
-          if (_everyN && _everyFn && _cycleNum % _everyN === 0) {
-            events = _everyFn(events, _cycleNum) ?? events;
-          }
-          events.forEach(({ value, time: t, dur }) => fire(value, time + t, dur));
-          _cycleNum++;
-        }, cycleSecs));
-        _loop.start(0);
-        return api;
-      },
-      stop() { _loop?.stop(); return api; },
-    };
-    return api;
+    const p = new Pattern(c => _flattenPat(parsed, c));
+    p._ct   = opts.cycle ?? '1m';
+    p._inst = instrument !== undefined ? instrument : null;
+    return p;
   }
 
   stack(...pats) {
-    return {
-      bpm(v) { Tone.getTransport().bpm.value = v; return this; },
-      start() { pats.forEach((p) => p.start()); Tone.getTransport().start(); return this; },
-      stop()  { pats.forEach((p) => p.stop());  Tone.getTransport().stop();  return this; },
+    const sp = {
+      bpm(v)  { Tone.getTransport().bpm.value = v; return sp; },
+      start() { pats.forEach(p => p.start()); Tone.getTransport().start(); return sp; },
+      stop()  { pats.forEach(p => p.stop());  Tone.getTransport().stop();  return sp; },
     };
+    return sp;
   }
 
   // ── Legacy scheduling ────────────────────────────────────────────────────

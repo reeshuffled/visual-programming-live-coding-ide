@@ -3,7 +3,7 @@ import { TOOLKIT_CATEGORIES, addToolkitEntries } from "../editor/completions.js"
 import { _registerBuiltin, registerAPI, _setToolkitApplier, _setBlocksApplier } from "./api-registry.js";
 import { initCamera, Camera, cleanupCameras } from "../api/camera.js";
 import { initMic } from "../api/mic.js";
-import { audio, startAudio, cleanupAudio } from "../api/audio.js";
+import { audio, startAudio, cleanupAudio, Pattern } from "../api/audio.js";
 import { Shader, ShaderFX, cleanupShaders } from "../api/shader.js";
 import { GLShader, GLSL_PRESETS } from "../api/glsl-shader.js";
 import { initPixi, PIXI } from "../api/pixi.js";
@@ -73,8 +73,9 @@ _registerBuiltin('SpectrogramCanvas', SpectrogramCanvas);
 _registerBuiltin('PianoRollViz',      PianoRollViz);
 _registerBuiltin('EQWidget',          EQWidget);
 _registerBuiltin('Media',    Media);
-_registerBuiltin('pat',   (str, inst, opts) => audio.pat(str, inst, opts));
-_registerBuiltin('stack', (...pats) => audio.stack(...pats));
+_registerBuiltin('pat',     (str, inst, opts) => audio.pat(str, inst, opts));
+_registerBuiltin('stack',   (...pats) => audio.stack(...pats));
+_registerBuiltin('Pattern', Pattern);
 
 class Color {
   static random() {

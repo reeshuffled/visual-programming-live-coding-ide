@@ -34,21 +34,69 @@ stack(
 | `"C4 [E4 G4]"` | `[ ]` group — E4 G4 share C4's time slot (double speed) |
 | `"<C4 G3> E4"` | `< >` alternate each cycle — C4 on cycle 0, G3 on cycle 1 |
 | `"C4*3 G4"` | `*N` repeat N times inside the slot |
+| `"C4! E4"` | `!N` replicate N times (default 2); `C4!` = `C4 C4` |
+| `"C4@2 E4"` | `@N` weight — C4 takes 2× duration relative to E4 |
+| `"C4? E4"` | `?` degrade — 50% chance to drop the event; `?0.3` sets probability |
+| `"[C4, E4, G4]"` | `,` polyphony — events sound simultaneously in that slot |
+| `"{C4 E4 G4}%4"` | `{}%N` polymeter — N steps/cycle cycling through inner values |
+| `"0..7"` | range — expands to `0 1 2 3 4 5 6 7` |
 
 ### Pattern API
 
+`pat(str, instrument?)` → `Pattern`. All transforms return new Patterns (immutable).
+
 ```js
-pat(str, synth)          // create pattern
-pat(str, (note, time, dur) => {}) // callback form — full control
+// Basic
+pat("C4 E4 G4", synth).start()         // create + schedule
+pat("bd sd hh", (val, t, dur) => { })  // callback form — full control
+stack(pat1, pat2).bpm(140).start()      // layer patterns
 
-.speed(2)                // 2× faster
-.slow(2)                 // 2× slower
-.euclid(3, 8)            // 3 hits across 8 equal steps (Euclidean)
-.every(4, evts => [...evts].reverse()) // transform every 4 cycles
-.start()                 // begin looping (also call audio.start())
-.stop()                  // stop loop
+// Transforms (chain before .start())
+.fast(2)                // 2× faster (= .speed(2))
+.slow(2)                // 2× slower
+.rev()                  // reverse event order each cycle
+.add(7)                 // transpose all notes +7 semitones
+.gain(0.6)              // scale event velocity (0–1, chainable)
+.pan(0.2)               // stereo pan 0 (left) – 1 (right)
+.note(scaleArr)         // map degree numbers → notes in scale array
 
-stack(pat1, pat2, ...)   // layer patterns; .bpm(120).start()
+.euclid(3, 8)           // 3 hits across 8 steps (Bresenham)
+.euclid(5, 8, 2)        // with rotation offset 2
+.every(4, p => p.rev()) // apply transform every 4 cycles
+.off(0.125, p => p.add(12))   // play original + time-shifted+transformed copy
+.jux(p => p.rev())      // pan original left + fn(pat) right
+
+.sometimesBy(0.3, p => p.fast(2))  // apply with probability 0.3
+.sometimes(p => p.rev())           // prob 0.5
+.often(p => p.add(12))             // prob 0.75
+.rarely(p => p.slow(2))            // prob 0.25
+
+.degrade()              // randomly drop ~50% of events per cycle
+.degradeBy(0.3)         // drop with prob 0.3
+
+.bpm(140)               // set global BPM (affects transport)
+.start(inst?)           // begin scheduling; inst overrides pat(str, inst)
+.stop()                 // stop loop
+```
+
+### Composing patterns
+
+```js
+const kick  = pat("x . x .", audio.kick());
+const snare = pat(". . x .", audio.synth());
+const hat   = pat("x*4",     audio.metal());
+
+// Polymeter: kick grid vs synth grid
+const bass  = pat("{C2 G2 Bb2 F2}%4", audio.synth());
+
+// Scale-mapped melody (0..7 → C minor)
+const scale = audio.scale('C4', 'minor');
+const mel   = pat("0..7", (deg, t, dur) => {
+  audio.synth().play(audio.note(scale, +deg), dur, t);
+});
+
+stack(kick, snare, hat, bass, mel).bpm(120).start();
+audio.start();
 ```
 
 ---

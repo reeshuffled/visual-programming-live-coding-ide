@@ -234,14 +234,29 @@ audio.pitchShift(semitones) / audio.compressor(threshold, ratio) / audio.eq(low,
 ### Patterns (mini-notation)
 
 ```js
-pat(str, synth)                          // str: "C4 E4 G4"
-pat(str, (note, time, dur) => {})        // callback form
-stack(pat1, pat2, ...)                   // layer patterns
+pat(str, inst?)           // → Pattern (immutable, chainable transforms)
+pat(str, (v,t,dur) => {}) // callback form
+stack(pat1, pat2, ...)    // layer patterns; .bpm(v).start()
 
-// Pattern modifiers:
-.speed(2) / .slow(2) / .euclid(k, n) / .every(n, fn) / .bpm(120) / .start() / .stop()
+// Notation:
+//   spaces=steps  []=group  <>=alternate  *N=repeat  !=replicate  @N=weight
+//   ?=degrade(0.5)  ,=simultaneous  {}%N=polymeter  0..7=range  ~/.=rest
 
-// Notation: spaces=steps  [E4 G4]=group  <C4 G3>=alternate  *N=repeat  ~/. =rest
+// Transforms (return new Pattern):
+.fast(n) / .slow(n) / .speed(n)
+.rev()                                    // reverse each cycle
+.add(semitones)                           // transpose all notes
+.gain(v)                                  // velocity scale 0–1
+.pan(v)                                   // stereo pan 0–1
+.note(scaleArr)                           // map numbers → scale degrees
+.euclid(k, n, rot?)                       // Euclidean rhythm with optional rotation
+.every(n, fn)                             // apply fn(pat) every N cycles
+.off(t, fn)                               // original + t-shifted fn(pat) copy
+.jux(fn)                                  // original (pan=0) + fn(pat) (pan=1)
+.sometimesBy(p, fn) / .sometimes / .often / .rarely
+.degrade() / .degradeBy(p)
+.bpm(v)
+.start(inst?) / .stop()
 ```
 
 ### Scales & analysis
