@@ -1,21 +1,23 @@
-import esprima from "esprima";
+import esprima from 'esprima';
+import { EditorView, Decoration, WidgetType, ViewPlugin } from '@codemirror/view';
+import { StateField, StateEffect, RangeSetBuilder } from '@codemirror/state';
 
 // ── Color utilities ───────────────────────────────────────────────────────────
 
 function colorToHex(color) {
-  const canvas = document.createElement("canvas");
+  const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 1;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext('2d');
   ctx.fillStyle = color;
   ctx.fillRect(0, 0, 1, 1);
   const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
 
 function isValidColor(color) {
   const s = new Option().style;
   s.color = color;
-  return s.color !== "";
+  return s.color !== '';
 }
 
 function hexToHsl(hex) {
@@ -42,12 +44,12 @@ function hslToHex(h, s, l) {
   const k = (n) => (n + h / 30) % 12;
   const a = s * Math.min(l, 1 - l);
   const f = (n) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
-  return `#${f(0).toString(16).padStart(2, "0")}${f(8).toString(16).padStart(2, "0")}${f(4).toString(16).padStart(2, "0")}`;
+  return `#${f(0).toString(16).padStart(2, '0')}${f(8).toString(16).padStart(2, '0')}${f(4).toString(16).padStart(2, '0')}`;
 }
 
 function resolveToHex(color) {
   if (/^#[0-9a-f]{6}$/i.test(color)) return color;
-  try { return colorToHex(color); } catch (_) { return "#ff0000"; }
+  try { return colorToHex(color); } catch (_) { return '#ff0000'; }
 }
 
 // ── Color popup (singleton) ───────────────────────────────────────────────────
@@ -57,8 +59,8 @@ let _popup = null;
 function getColorPopup() {
   if (_popup) return _popup;
 
-  const el = document.createElement("div");
-  el.className = "ar-color-popup";
+  const el = document.createElement('div');
+  el.className = 'ar-color-popup';
   el.innerHTML = `
     <div class="ar-cp-preview"></div>
     <div class="ar-cp-row"><span>H</span><input type="range" class="ar-cp-h" min="0" max="359"></div>
@@ -66,18 +68,17 @@ function getColorPopup() {
     <div class="ar-cp-row"><span>L</span><input type="range" class="ar-cp-l" min="5" max="95"></div>
     <input type="text" class="ar-cp-hex" maxlength="7" spellcheck="false">
   `;
-  el.style.display = "none";
+  el.style.display = 'none';
   document.body.appendChild(el);
 
-  const preview = el.querySelector(".ar-cp-preview");
-  const hSlider = el.querySelector(".ar-cp-h");
-  const sSlider = el.querySelector(".ar-cp-s");
-  const lSlider = el.querySelector(".ar-cp-l");
-  const hexInput = el.querySelector(".ar-cp-hex");
+  const preview = el.querySelector('.ar-cp-preview');
+  const hSlider = el.querySelector('.ar-cp-h');
+  const sSlider = el.querySelector('.ar-cp-s');
+  const lSlider = el.querySelector('.ar-cp-l');
+  const hexInput = el.querySelector('.ar-cp-hex');
 
   let h = 0, s = 100, l = 50;
   let onChangeCb = null;
-  let onCloseCb = null;
   let anchorEl = null;
 
   function updateSliderBg() {
@@ -98,11 +99,11 @@ function getColorPopup() {
     onChangeCb?.(hex);
   }
 
-  hSlider.addEventListener("input", () => { h = +hSlider.value; emitColor(); });
-  sSlider.addEventListener("input", () => { s = +sSlider.value; emitColor(); });
-  lSlider.addEventListener("input", () => { l = +lSlider.value; emitColor(); });
+  hSlider.addEventListener('input', () => { h = +hSlider.value; emitColor(); });
+  sSlider.addEventListener('input', () => { s = +sSlider.value; emitColor(); });
+  lSlider.addEventListener('input', () => { l = +lSlider.value; emitColor(); });
 
-  hexInput.addEventListener("change", () => {
+  hexInput.addEventListener('change', () => {
     const v = hexInput.value.trim();
     if (/^#[0-9a-f]{6}$/i.test(v)) {
       [h, s, l] = hexToHsl(v);
@@ -111,328 +112,350 @@ function getColorPopup() {
     }
   });
 
-  // Stop mousedown from bubbling to CM (would move cursor)
-  el.addEventListener("mousedown", (e) => e.stopImmediatePropagation());
+  el.addEventListener('mousedown', (e) => e.stopImmediatePropagation());
 
-  // Close on outside click
-  document.addEventListener("mousedown", (e) => {
-    if (el.style.display === "none") return;
-    if (!el.contains(e.target) && e.target !== anchorEl && !anchorEl?.contains(e.target)) {
-      hide();
-    }
+  document.addEventListener('mousedown', (e) => {
+    if (el.style.display === 'none') return;
+    if (!el.contains(e.target) && e.target !== anchorEl && !anchorEl?.contains(e.target)) hide();
   });
 
   function reposition() {
-    if (!anchorEl || el.style.display === "none") return;
+    if (!anchorEl || el.style.display === 'none') return;
     const r = anchorEl.getBoundingClientRect();
     let left = r.left;
     let top = r.bottom + 4;
-    // Keep inside viewport
     if (left + 190 > window.innerWidth) left = window.innerWidth - 194;
     if (top + 160 > window.innerHeight) top = r.top - 160 - 4;
     el.style.left = `${left}px`;
     el.style.top = `${top}px`;
   }
 
-  function show(anchor, hex, onChange, onClose) {
+  function show(anchor, hex, onChange) {
     anchorEl = anchor;
     onChangeCb = onChange;
-    onCloseCb = onClose;
     const resolved = resolveToHex(hex);
     [h, s, l] = hexToHsl(resolved);
     hSlider.value = h; sSlider.value = s; lSlider.value = l;
     preview.style.background = resolved;
     hexInput.value = resolved;
     updateSliderBg();
-    el.style.display = "block";
+    el.style.display = 'block';
     reposition();
   }
 
   function hide() {
-    if (el.style.display === "none") return;
-    el.style.display = "none";
-    onCloseCb?.();
+    if (el.style.display === 'none') return;
+    el.style.display = 'none';
     onChangeCb = null;
-    onCloseCb = null;
     anchorEl = null;
   }
 
-  function isOpen() { return el.style.display !== "none"; }
+  function isOpen() { return el.style.display !== 'none'; }
   function currentAnchor() { return anchorEl; }
 
   _popup = { show, hide, isOpen, currentAnchor };
   return _popup;
 }
 
+// ── State machinery ───────────────────────────────────────────────────────────
 
+const setWidgetsEffect = StateEffect.define();
+const setGhostEffect   = StateEffect.define();
 
-// ── Color swatch widget (for existing color literals) ─────────────────────────
+export const widgetsField = StateField.define({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) if (e.is(setWidgetsEffect)) deco = e.value;
+    return deco;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
 
-function makeColorWidget(cm, arg, code, suppressDebounce) {
-  const color = arg.value;
-  if (!isValidColor(color)) return null;
+export const ghostField = StateField.define({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) if (e.is(setGhostEffect)) deco = e.value;
+    return deco;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
 
-  const hex = resolveToHex(color);
-  const swatch = document.createElement("span");
-  swatch.className = "ar-color-swatch";
-  swatch.style.background = hex;
-  swatch.title = color;
+// ── Widget types ──────────────────────────────────────────────────────────────
 
-  const argStartIndex = arg.range[0];
-  let currentStr = code.slice(arg.range[0], arg.range[1]);
-
-  const applyColor = (newHex) => {
-    const newStr = `"${newHex}"`;
-    const fromPos = cm.posFromIndex(argStartIndex);
-    const toPos = cm.posFromIndex(argStartIndex + currentStr.length);
-    cm.replaceRange(newStr, fromPos, toPos);
-    currentStr = newStr;
-    swatch.style.background = newHex;
-    swatch.title = newHex;
-  };
-
-  swatch.addEventListener("mousedown", (e) => e.stopImmediatePropagation());
-  swatch.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const popup = getColorPopup();
-    if (popup.isOpen() && popup.currentAnchor() === swatch) {
-      popup.hide();
-    } else {
-      popup.show(
-        swatch,
-        swatch.style.background || hex,
-        (newHex) => { suppressDebounce(true); applyColor(newHex); },
-        () => suppressDebounce(false),
-      );
-    }
-  });
-
-  return swatch;
-}
-
-// ── Scrub widget (for number literals) ───────────────────────────────────────
-
-function makeScrubWidget(cm, arg, suppressDebounce) {
-  const argStartIndex = arg.range[0];
-  let currentVal = arg.value;
-  let currentStr = String(currentVal);
-  let currentMark = null;
-
-  const scrub = document.createElement("span");
-  scrub.className = "ar-scrub";
-  scrub.textContent = currentStr;
-
-  scrub.addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    suppressDebounce(true);
-    scrub.classList.add("ar-scrub-active");
-
-    const dragStartX = e.clientX;
-    const dragStartVal = currentVal;
-    const isInt = Number.isInteger(currentVal);
-    const magnitude = Math.abs(currentVal) || 1;
-    const step = magnitude >= 100 ? 2 : magnitude >= 10 ? 1 : 0.1;
-
-    const onMove = (e) => {
-      const delta = e.clientX - dragStartX;
-      let newVal = dragStartVal + Math.round(delta / 3) * step;
-      newVal = isInt ? Math.round(newVal) : Math.round(newVal * 10) / 10;
-      if (newVal === currentVal) return;
-
-      const newStr = String(newVal);
-      const fromPos = cm.posFromIndex(argStartIndex);
-      const toPos = cm.posFromIndex(argStartIndex + currentStr.length);
-      cm.replaceRange(newStr, fromPos, toPos);
-      currentVal = newVal;
-      currentStr = newStr;
-      scrub.textContent = newStr;
-
-      if (currentMark) { try { currentMark.clear(); } catch (_) {} }
-      const newFrom = cm.posFromIndex(argStartIndex);
-      const newTo = cm.posFromIndex(argStartIndex + newStr.length);
-      currentMark = cm.markText(newFrom, newTo, {
-        replacedWith: scrub,
-        handleMouseEvents: false,
-      });
-    };
-
-    const onUp = () => {
-      scrub.classList.remove("ar-scrub-active");
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      suppressDebounce(false);
-    };
-
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  });
-
-  return {
-    el: scrub,
-    setMark: (m) => { currentMark = m; },
-  };
-}
-
-// ── Main export ───────────────────────────────────────────────────────────────
-
-export function initInlineWidgets(cm) {
-  let activeMarks = [];
-  let debounceTimer = null;
-  let dragging = false;
-
-  function suppressDebounce(on) {
-    dragging = on;
-    if (!on) {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(placeWidgets, 200);
-    }
+export class ColorSwatchWidget extends WidgetType {
+  constructor(colorStr, argFrom, argLength) {
+    super();
+    this.colorStr = colorStr;
+    this.argFrom  = argFrom;
+    this.argLength = argLength;
   }
 
-  function clearMarks() {
-    for (const m of activeMarks) { try { m.clear(); } catch (_) {} }
-    activeMarks = [];
+  eq(other) {
+    return this.colorStr === other.colorStr && this.argFrom === other.argFrom;
   }
 
-  function placeWidgets() {
-    if (dragging) return;
-    clearMarks();
-    clearGhost();
+  toDOM(view) {
+    const hex = resolveToHex(this.colorStr);
+    const swatch = document.createElement('span');
+    swatch.className = 'ar-color-swatch';
+    swatch.style.background = hex;
+    swatch.title = this.colorStr;
 
-    const code = cm.getValue();
-    let ast;
-    try {
-      ast = esprima.parseScript(code, { range: true, tolerant: true });
-    } catch (_) {
-      return;
-    }
+    let currentLength = this.argLength;
 
-    const toPlace = [];
-
-    function visitCall(call) {
-      if (call.callee?.type !== "MemberExpression") return;
-      const method = call.callee.property?.name;
-      if (!method) return;
-
-      for (const arg of call.arguments) {
-        if (arg.type !== "Literal") continue;
-        const from = cm.posFromIndex(arg.range[0]);
-        const to = cm.posFromIndex(arg.range[1]);
-
-        if (typeof arg.value === "string" && isValidColor(arg.value)) {
-          const el = makeColorWidget(cm, arg, code, suppressDebounce);
-          if (el) toPlace.push({ pos: from, el, bookmark: true });
-        } else if (typeof arg.value === "number") {
-          const { el, setMark } = makeScrubWidget(cm, arg, suppressDebounce);
-          toPlace.push({ from, to, el, setMark, bookmark: false });
-        }
-      }
-    }
-
-    function walk(node) {
-      if (!node || typeof node !== "object") return;
-      if (node.type === "CallExpression") visitCall(node);
-      for (const v of Object.values(node)) {
-        if (Array.isArray(v)) v.forEach(walk);
-        else if (v && typeof v === "object" && v.type) walk(v);
-      }
-    }
-
-    walk(ast);
-
-    for (const { pos, from, to, el, setMark, bookmark } of toPlace) {
-      const mark = bookmark
-        ? cm.setBookmark(pos, { widget: el, insertLeft: true, handleMouseEvents: false })
-        : cm.markText(from, to, { replacedWith: el, handleMouseEvents: false });
-      activeMarks.push(mark);
-      if (setMark) setMark(mark);
-    }
-  }
-
-  // ── Ghost widget ────────────────────────────────────────────────────────────
-  let ghostMark = null;
-  let ghostDebounce = null;
-
-  function clearGhost() {
-    if (ghostMark) { try { ghostMark.clear(); } catch (_) {} ghostMark = null; }
-  }
-
-  function updateGhost() {
-    clearGhost();
-    if (dragging) return;
-
-    const cursor = cm.getCursor();
-    const lineText = cm.getLine(cursor.line);
-    if (!lineText) return;
-
-    const before = lineText.slice(0, cursor.ch);
-    const after = lineText.slice(cursor.ch);
-    const m = before.match(/(\w+)\.color\(\s*$/);
-    if (!m || !/^\s*\)/.test(after)) return;
-
-    const insertIndex = cm.indexFromPos(cursor);
-    let currentStr = "";
-
-    const swatch = document.createElement("span");
-    swatch.className = "ar-color-swatch ar-color-swatch-ghost";
-    swatch.title = "Pick a color";
-
-    swatch.addEventListener("mousedown", (e) => e.stopImmediatePropagation());
-    swatch.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+    swatch.addEventListener('mousedown', (e) => e.stopImmediatePropagation());
+    swatch.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
       const popup = getColorPopup();
       if (popup.isOpen() && popup.currentAnchor() === swatch) {
         popup.hide();
-        return;
-      }
-      popup.show(
-        swatch,
-        "#ff0000",
-        (newHex) => {
-          suppressDebounce(true);
-          swatch.style.background = newHex;
+      } else {
+        popup.show(swatch, hex, (newHex) => {
           const newStr = `"${newHex}"`;
-          const fromPos = cm.posFromIndex(insertIndex);
-          const toPos = cm.posFromIndex(insertIndex + currentStr.length);
-          cm.replaceRange(newStr, fromPos, toPos);
-          currentStr = newStr;
-        },
-        () => {
-          suppressDebounce(false);
-        },
-      );
+          view.dispatch({ changes: { from: this.argFrom, to: this.argFrom + currentLength, insert: newStr } });
+          currentLength = newStr.length;
+          swatch.style.background = newHex;
+          swatch.title = newHex;
+        });
+      }
     });
 
-    ghostMark = cm.setBookmark(cursor, {
-      widget: swatch,
-      insertLeft: true,
-      handleMouseEvents: false,
+    return swatch;
+  }
+}
+
+export class ScrubWidget extends WidgetType {
+  constructor(value, argFrom, argLength, setDragging) {
+    super();
+    this.value       = value;
+    this.argFrom     = argFrom;
+    this.argLength   = argLength;
+    this._setDragging = setDragging;
+  }
+
+  eq(other) {
+    return this.value === other.value && this.argFrom === other.argFrom;
+  }
+
+  toDOM(view) {
+    const scrub = document.createElement('span');
+    scrub.className = 'ar-scrub';
+    scrub.textContent = String(this.value);
+
+    scrub.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      this._setDragging(true);
+      scrub.classList.add('ar-scrub-active');
+
+      const startX   = e.clientX;
+      const startVal = this.value;
+      const isInt    = Number.isInteger(startVal);
+      const mag      = Math.abs(startVal) || 1;
+      const step     = mag >= 100 ? 2 : mag >= 10 ? 1 : 0.1;
+
+      let currentFrom   = this.argFrom;
+      let currentLength = this.argLength;
+      let currentVal    = startVal;
+
+      const onMove = (ev) => {
+        const delta = ev.clientX - startX;
+        let newVal  = startVal + Math.round(delta / 3) * step;
+        newVal = isInt ? Math.round(newVal) : Math.round(newVal * 10) / 10;
+        if (newVal === currentVal) return;
+
+        const newStr = String(newVal);
+        view.dispatch({ changes: { from: currentFrom, to: currentFrom + currentLength, insert: newStr } });
+        currentLength = newStr.length;
+        currentVal    = newVal;
+        scrub.textContent = newStr;
+      };
+
+      const onUp = () => {
+        scrub.classList.remove('ar-scrub-active');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        this._setDragging(false);
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
+    return scrub;
+  }
+}
+
+class GhostSwatchWidget extends WidgetType {
+  constructor(insertAt) { super(); this.insertAt = insertAt; }
+  eq(other) { return this.insertAt === other.insertAt; }
+
+  toDOM(view) {
+    let currentStr = '';
+    const swatch = document.createElement('span');
+    swatch.className = 'ar-color-swatch ar-color-swatch-ghost';
+    swatch.title = 'Pick a color';
+
+    swatch.addEventListener('mousedown', (e) => e.stopImmediatePropagation());
+    swatch.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const popup = getColorPopup();
+      if (popup.isOpen() && popup.currentAnchor() === swatch) { popup.hide(); return; }
+      popup.show(swatch, '#ff0000', (newHex) => {
+        const newStr = `"${newHex}"`;
+        view.dispatch({ changes: { from: this.insertAt, to: this.insertAt + currentStr.length, insert: newStr } });
+        currentStr = newStr;
+        swatch.style.background = newHex;
+      });
+    });
+
+    return swatch;
+  }
+}
+
+// ── AST-based decoration builders ─────────────────────────────────────────────
+
+function buildWidgetDecorations(code, setDragging) {
+  let ast;
+  try { ast = esprima.parseScript(code, { range: true, tolerant: true }); }
+  catch (_) { return Decoration.none; }
+
+  const items = [];
+
+  function visitCall(call) {
+    if (call.callee?.type !== 'MemberExpression') return;
+    for (const arg of call.arguments) {
+      if (arg.type !== 'Literal') continue;
+      if (typeof arg.value === 'string' && isValidColor(arg.value)) {
+        items.push({
+          from: arg.range[0], to: arg.range[0],
+          deco: Decoration.widget({
+            widget: new ColorSwatchWidget(arg.value, arg.range[0], arg.range[1] - arg.range[0]),
+            side: -1,
+          }),
+        });
+      } else if (typeof arg.value === 'number') {
+        items.push({
+          from: arg.range[0], to: arg.range[1],
+          deco: Decoration.replace({
+            widget: new ScrubWidget(arg.value, arg.range[0], arg.range[1] - arg.range[0], setDragging),
+          }),
+        });
+      }
+    }
+  }
+
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'CallExpression') visitCall(node);
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === 'object' && v.type) walk(v);
+    }
+  }
+
+  walk(ast);
+  items.sort((a, b) => a.from !== b.from ? a.from - b.from : a.to - b.to);
+
+  const builder = new RangeSetBuilder();
+  for (const { from, to, deco } of items) builder.add(from, to, deco);
+  return builder.finish();
+}
+
+function buildGhostDecoration(view) {
+  const state  = view.state;
+  const cursor = state.selection.main.head;
+  const line   = state.doc.lineAt(cursor);
+  const before = line.text.slice(0, cursor - line.from);
+  const after  = line.text.slice(cursor - line.from);
+  if (!/(\w+)\.color\(\s*$/.test(before) || !/^\s*\)/.test(after)) return Decoration.none;
+
+  const builder = new RangeSetBuilder();
+  builder.add(cursor, cursor, Decoration.widget({ widget: new GhostSwatchWidget(cursor), side: -1 }));
+  return builder.finish();
+}
+
+// ── ViewPlugin ────────────────────────────────────────────────────────────────
+
+export const inlineWidgetsPlugin = ViewPlugin.fromClass(class {
+  constructor(view) {
+    this._view      = view;
+    this._dragging  = false;
+    this._destroyed = false;
+    this._rebounce  = null;
+    this._ghostDebounce = null;
+    this._setDragging = this._setDragging.bind(this);
+    this._scheduleWidgets(300);
+  }
+
+  update(update) {
+    if (this._destroyed || this._dragging) return;
+    if (update.docChanged) {
+      clearTimeout(this._rebounce);
+      this._rebounce = setTimeout(() => this._rebuildWidgets(), 700);
+    } else if (update.selectionSet) {
+      clearTimeout(this._ghostDebounce);
+      this._ghostDebounce = setTimeout(() => this._rebuildGhost(), 60);
+    }
+  }
+
+  _scheduleWidgets(ms) {
+    clearTimeout(this._rebounce);
+    this._rebounce = setTimeout(() => this._rebuildWidgets(), ms);
+  }
+
+  _rebuildWidgets() {
+    if (this._destroyed || this._dragging) return;
+    const code  = this._view.state.doc.toString();
+    const decos = buildWidgetDecorations(code, this._setDragging);
+    this._view.dispatch({ effects: setWidgetsEffect.of(decos) });
+    this._rebuildGhost();
+  }
+
+  _rebuildGhost() {
+    if (this._destroyed || this._dragging) return;
+    const deco = buildGhostDecoration(this._view);
+    this._view.dispatch({ effects: setGhostEffect.of(deco) });
+  }
+
+  _setDragging(on) {
+    this._dragging = on;
+    if (!on) this._scheduleWidgets(200);
+  }
+
+  refresh() {
+    if (this._destroyed) return;
+    clearTimeout(this._rebounce);
+    this._rebuildWidgets();
+  }
+
+  clear() {
+    this._view.dispatch({
+      effects: [setWidgetsEffect.of(Decoration.none), setGhostEffect.of(Decoration.none)],
     });
   }
 
-  cm.on("cursorActivity", () => {
-    clearTimeout(ghostDebounce);
-    ghostDebounce = setTimeout(updateGhost, 60);
-  });
+  destroy() {
+    clearTimeout(this._rebounce);
+    clearTimeout(this._ghostDebounce);
+    this._destroyed = true;
+    this.clear();
+  }
+});
 
-  cm.on("change", () => {
-    if (dragging) return;
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(placeWidgets, 700);
-  });
+// ── Public API ────────────────────────────────────────────────────────────────
 
-  debounceTimer = setTimeout(placeWidgets, 300);
+export function inlineWidgetsExtension() {
+  return [widgetsField, ghostField, inlineWidgetsPlugin];
+}
 
+export function initInlineWidgets(view) {
+  const plugin = view.plugin(inlineWidgetsPlugin);
   return {
-    refresh: () => { clearTimeout(debounceTimer); placeWidgets(); },
-    clear: () => { clearMarks(); clearGhost(); },
-    destroy: () => {
-      clearTimeout(debounceTimer);
-      clearTimeout(ghostDebounce);
-      clearMarks();
-      clearGhost();
-    },
+    refresh: () => plugin?.refresh(),
+    clear:   () => plugin?.clear(),
+    destroy: () => plugin?.destroy(),
   };
 }

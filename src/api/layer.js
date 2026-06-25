@@ -12,6 +12,7 @@ export class Layer {
       invert: null,
       rawFilter: null,
       opacity: null,
+      blendMode: null,
       rotate: null,
       rotateX: null,
       rotateY: null,
@@ -120,6 +121,12 @@ export class Layer {
     return this;
   }
 
+  blendMode(mode) {
+    this.#state.blendMode = mode;
+    this.#canvas.style.mixBlendMode = mode;
+    return this;
+  }
+
   reset() {
     this.#state = {
       blur: null,
@@ -129,6 +136,7 @@ export class Layer {
       invert: null,
       rawFilter: null,
       opacity: null,
+      blendMode: null,
       rotate: null,
       rotateX: null,
       rotateY: null,
@@ -138,6 +146,7 @@ export class Layer {
     };
     this.#canvas.style.filter = "";
     this.#canvas.style.opacity = "";
+    this.#canvas.style.mixBlendMode = "";
     this.#canvas.style.transform = "";
     this.#canvas.style.clipPath = "";
     return this;

@@ -706,6 +706,37 @@ Blockly.defineBlocksWithJsonArray([
     nextStatement: null,
     colour: 60,
   },
+  {
+    type: 'canvas_blend_mode',
+    message0: 'layer %1 blend mode %2',
+    args0: [
+      { type: 'field_number', name: 'Z', value: 1 },
+      {
+        type: 'field_dropdown', name: 'MODE', options: [
+          ['screen', 'screen'], ['multiply', 'multiply'], ['overlay', 'overlay'],
+          ['difference', 'difference'], ['lighten', 'lighten'], ['darken', 'darken'],
+          ['hard-light', 'hard-light'], ['soft-light', 'soft-light'],
+          ['exclusion', 'exclusion'], ['color-burn', 'color-burn'],
+        ],
+      },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 60,
+    tooltip: 'Set CSS mix-blend-mode on a layer — composites it with layers below',
+  },
+  {
+    type: 'draw_pixelate',
+    message0: 'pixelate layer %1 block size %2',
+    args0: [
+      { type: 'field_number', name: 'Z', value: 0 },
+      { type: 'field_number', name: 'BLOCK', value: 8, min: 1 },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 60,
+    tooltip: 'Draw a blocky pixelated copy of a canvas layer onto the main canvas',
+  },
 
   // ── Media ──────────────────────────────────────────────────────────────────
   {
@@ -804,10 +835,34 @@ Blockly.defineBlocksWithJsonArray([
     tooltip: 'Close a spawned window by id',
   },
   {
+    type: 'wm_set_z',
+    message0: 'set window %1 z-index %2',
+    args0: [
+      { type: 'input_value', name: 'ID' },
+      { type: 'field_number', name: 'Z', value: 200 },
+    ],
+    inputsInline: true,
+    previousStatement: null, nextStatement: null,
+    colour: 200,
+    tooltip: 'Set CSS z-index stacking order on a window',
+  },
+  {
+    type: 'wm_set_opacity',
+    message0: 'set window %1 opacity %2',
+    args0: [
+      { type: 'input_value', name: 'ID' },
+      { type: 'field_number', name: 'V', value: 0.5, min: 0, max: 1, precision: 0.01 },
+    ],
+    inputsInline: true,
+    previousStatement: null, nextStatement: null,
+    colour: 200,
+    tooltip: 'Set CSS opacity on a window (0=transparent, 1=opaque)',
+  },
+  {
     type: 'wm_spawn_html',
     message0: 'spawn html window %1 html %2 w %3 h %4',
     args0: [
-      { type: 'field_input', name: 'TITLE', text: 'Panel' },
+      { type: 'field_input', name: 'TITLE', text: 'panel' },
       { type: 'field_input', name: 'HTML', text: '<p>hello</p>' },
       { type: 'field_number', name: 'W', value: 320 },
       { type: 'field_number', name: 'H', value: 240 },
@@ -820,7 +875,7 @@ Blockly.defineBlocksWithJsonArray([
     type: 'wm_spawn_camera',
     message0: 'spawn camera window %1 w %2 h %3',
     args0: [
-      { type: 'field_input', name: 'TITLE', text: 'Cam' },
+      { type: 'field_input', name: 'TITLE', text: 'camera' },
       { type: 'field_number', name: 'W', value: 320 },
       { type: 'field_number', name: 'H', value: 240 },
     ],
@@ -833,7 +888,7 @@ Blockly.defineBlocksWithJsonArray([
     message0: 'spawn canvas z %1 window %2 w %3 h %4',
     args0: [
       { type: 'field_number', name: 'Z', value: 0 },
-      { type: 'field_input', name: 'TITLE', text: 'Canvas' },
+      { type: 'field_input', name: 'TITLE', text: 'canvas' },
       { type: 'field_number', name: 'W', value: 640 },
       { type: 'field_number', name: 'H', value: 480 },
     ],
@@ -846,7 +901,7 @@ Blockly.defineBlocksWithJsonArray([
     message0: 'spawn image %1 title %2 w %3 h %4',
     args0: [
       { type: 'input_value', name: 'SRC' },
-      { type: 'field_input', name: 'TITLE', text: 'Image' },
+      { type: 'field_input', name: 'TITLE', text: 'image' },
       { type: 'field_number', name: 'W', value: 480 },
       { type: 'field_number', name: 'H', value: 360 },
     ],
@@ -860,7 +915,7 @@ Blockly.defineBlocksWithJsonArray([
     message0: 'spawn video %1 title %2 w %3 h %4',
     args0: [
       { type: 'input_value', name: 'SRC' },
-      { type: 'field_input', name: 'TITLE', text: 'Video' },
+      { type: 'field_input', name: 'TITLE', text: 'video' },
       { type: 'field_number', name: 'W', value: 640 },
       { type: 'field_number', name: 'H', value: 480 },
     ],
@@ -874,7 +929,7 @@ Blockly.defineBlocksWithJsonArray([
     message0: 'spawn shader %1 title %2 w %3 h %4',
     args0: [
       { type: 'input_value', name: 'SHADER' },
-      { type: 'field_input', name: 'TITLE', text: 'Shader' },
+      { type: 'field_input', name: 'TITLE', text: 'shader' },
       { type: 'field_number', name: 'W', value: 640 },
       { type: 'field_number', name: 'H', value: 480 },
     ],
@@ -1110,6 +1165,128 @@ Blockly.defineBlocksWithJsonArray([
     colour: 165,
     tooltip: 'Stop a CameraStream and release the device',
   },
+
+  // ── Audio — filter / meter / chain / attack / release ──────────────────────
+  {
+    type: 'audio_filter',
+    message0: '%1 filter freq %2 Hz Q %3',
+    args0: [
+      { type: 'field_dropdown', name: 'TYPE', options: [
+        ['lowpass', 'lowpass'], ['highpass', 'highpass'], ['bandpass', 'bandpass'],
+        ['notch', 'notch'], ['allpass', 'allpass'],
+      ]},
+      { type: 'field_number', name: 'FREQ', value: 2000, min: 20, max: 20000 },
+      { type: 'field_number', name: 'Q', value: 1, min: 0.1, max: 20 },
+    ],
+    output: null,
+    colour: 260,
+    tooltip: 'Create a filter effect — connect with chain or connect blocks',
+  },
+  {
+    type: 'audio_meter',
+    message0: 'meter',
+    output: null,
+    colour: 260,
+    tooltip: 'Create a level meter — put it at the end of a chain to measure amplitude',
+  },
+  {
+    type: 'audio_meter_value',
+    message0: '%1 level (dB)',
+    args0: [{ type: 'input_value', name: 'METER' }],
+    output: 'Number',
+    inputsInline: true,
+    colour: 260,
+    tooltip: 'Get current meter level in dB — use isFinite() check; -Infinity when silent',
+  },
+  {
+    type: 'audio_chain',
+    message0: 'chain %1 through %2 %3 %4',
+    args0: [
+      { type: 'input_value', name: 'SYNTH' },
+      { type: 'input_value', name: 'FX1' },
+      { type: 'input_value', name: 'FX2' },
+      { type: 'input_value', name: 'FX3' },
+    ],
+    inputsInline: true,
+    previousStatement: null,
+    nextStatement: null,
+    colour: 260,
+    tooltip: 'Route synth through up to 3 effects (FX2, FX3 optional) — e.g. filter → reverb → meter',
+  },
+  {
+    type: 'audio_attack',
+    message0: 'attack %1 on %2',
+    args0: [
+      { type: 'field_input', name: 'NOTE', text: 'C4' },
+      { type: 'input_value', name: 'SYNTH' },
+    ],
+    inputsInline: true,
+    previousStatement: null,
+    nextStatement: null,
+    colour: 260,
+    tooltip: 'Trigger note attack (key-down) without release — pair with audio release block',
+  },
+  {
+    type: 'audio_release',
+    message0: 'release %1 on %2',
+    args0: [
+      { type: 'field_input', name: 'NOTE', text: 'C4' },
+      { type: 'input_value', name: 'SYNTH' },
+    ],
+    inputsInline: true,
+    previousStatement: null,
+    nextStatement: null,
+    colour: 260,
+    tooltip: 'Trigger note release (key-up) — pairs with audio attack block',
+  },
+
+  // ── Draw — ring / rectStroke ───────────────────────────────────────────────
+  {
+    type: 'draw_ring',
+    message0: 'ring x %1 y %2 r %3 color %4 thickness %5',
+    args0: [
+      { type: 'field_number', name: 'X', value: 400 },
+      { type: 'field_number', name: 'Y', value: 225 },
+      { type: 'field_number', name: 'R', value: 80 },
+      { type: 'field_input', name: 'COLOR', text: 'white' },
+      { type: 'field_number', name: 'T', value: 3, min: 0.5 },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 60,
+    tooltip: 'Draw a stroked circle (ring) — no fill',
+  },
+  {
+    type: 'draw_rect_stroke',
+    message0: 'rect outline x %1 y %2 w %3 h %4 color %5 thickness %6',
+    args0: [
+      { type: 'field_number', name: 'X', value: 100 },
+      { type: 'field_number', name: 'Y', value: 100 },
+      { type: 'field_number', name: 'W', value: 200 },
+      { type: 'field_number', name: 'H', value: 120 },
+      { type: 'field_input', name: 'COLOR', text: 'white' },
+      { type: 'field_number', name: 'T', value: 2, min: 0.5 },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 60,
+    tooltip: 'Draw a stroked rectangle outline — no fill',
+  },
+
+  // ── Control — key with down + up handler ───────────────────────────────────
+  {
+    type: 'ctrl_onkey_char',
+    message0: 'when key %1 pressed',
+    args0: [{ type: 'field_input', name: 'KEY', text: 'a' }],
+    message1: 'down %1',
+    args1: [{ type: 'input_statement', name: 'DOWN' }],
+    message2: 'up %1',
+    args2: [{ type: 'input_statement', name: 'UP' }],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 120,
+    tooltip: 'Run code when any typed key is pressed/released — enter the key character (a, z, 1, Enter, ArrowUp…)',
+  },
 ]);
 
 // ── Code generators ──────────────────────────────────────────────────────────
@@ -1343,6 +1520,10 @@ javascriptGenerator.forBlock['canvas_blur'] = (b) =>
   `getLayer(${b.getFieldValue('Z')}).blur(${b.getFieldValue('AMT')});\n`;
 javascriptGenerator.forBlock['canvas_layer_opacity'] = (b) =>
   `getLayer(${b.getFieldValue('Z')}).opacity(${b.getFieldValue('OPACITY')});\n`;
+javascriptGenerator.forBlock['canvas_blend_mode'] = (b) =>
+  `getLayer(${b.getFieldValue('Z')}).blendMode('${b.getFieldValue('MODE')}');\n`;
+javascriptGenerator.forBlock['draw_pixelate'] = (b) =>
+  `draw.pixelate(getCanvas(${b.getFieldValue('Z')}), ${b.getFieldValue('BLOCK')});\n`;
 
 // Media
 javascriptGenerator.forBlock['media_video'] = (b) => {
@@ -1374,6 +1555,14 @@ javascriptGenerator.forBlock['wm_resize_win'] = (b) =>
 javascriptGenerator.forBlock['wm_close_win'] = (b, g) => {
   const id = g.valueToCode(b, 'ID', Order.NONE) || "''";
   return `wm.close(${id});\n`;
+};
+javascriptGenerator.forBlock['wm_set_z'] = (b, g) => {
+  const id = g.valueToCode(b, 'ID', Order.NONE) || "''";
+  return `wm.setZ(${id}, ${b.getFieldValue('Z')});\n`;
+};
+javascriptGenerator.forBlock['wm_set_opacity'] = (b, g) => {
+  const id = g.valueToCode(b, 'ID', Order.NONE) || "''";
+  return `wm.setOpacity(${id}, ${b.getFieldValue('V')});\n`;
 };
 javascriptGenerator.forBlock['wm_spawn_html'] = (b) => {
   const title = JSON.stringify(b.getFieldValue('TITLE'));
@@ -1495,6 +1684,166 @@ javascriptGenerator.forBlock['camera_stop'] = (b, g) => {
   return `(${cam}).stop();\n`;
 };
 
+// Audio — filter / meter / chain / attack / release
+javascriptGenerator.forBlock['audio_filter'] = (b) =>
+  [`audio.filter(${JSON.stringify(b.getFieldValue('TYPE'))}, ${b.getFieldValue('FREQ')}, ${b.getFieldValue('Q')})`, Order.FUNCTION_CALL];
+javascriptGenerator.forBlock['audio_meter'] = () =>
+  [`audio.meter()`, Order.FUNCTION_CALL];
+javascriptGenerator.forBlock['audio_meter_value'] = (b, g) => {
+  const m = g.valueToCode(b, 'METER', Order.NONE) || 'null';
+  return [`(${m}).getValue()`, Order.FUNCTION_CALL];
+};
+javascriptGenerator.forBlock['audio_chain'] = (b, g) => {
+  const synth = g.valueToCode(b, 'SYNTH', Order.NONE) || 'null';
+  const fx1 = g.valueToCode(b, 'FX1', Order.NONE);
+  const fx2 = g.valueToCode(b, 'FX2', Order.NONE);
+  const fx3 = g.valueToCode(b, 'FX3', Order.NONE);
+  const args = [fx1, fx2, fx3].filter(Boolean).join(', ');
+  return `(${synth}).chain(${args});\n`;
+};
+javascriptGenerator.forBlock['audio_attack'] = (b, g) => {
+  const note = JSON.stringify(b.getFieldValue('NOTE'));
+  const synth = g.valueToCode(b, 'SYNTH', Order.NONE) || 'null';
+  return `(${synth}).attack(${note});\n`;
+};
+javascriptGenerator.forBlock['audio_release'] = (b, g) => {
+  const note = JSON.stringify(b.getFieldValue('NOTE'));
+  const synth = g.valueToCode(b, 'SYNTH', Order.NONE) || 'null';
+  return `(${synth}).release(${note});\n`;
+};
+
+// Draw — ring / rectStroke
+javascriptGenerator.forBlock['draw_ring'] = (b) => {
+  const [x, y, r] = ['X', 'Y', 'R'].map(f => b.getFieldValue(f));
+  return `draw.ring(${x}, ${y}, ${r}, ${JSON.stringify(b.getFieldValue('COLOR'))}, ${b.getFieldValue('T')});\n`;
+};
+javascriptGenerator.forBlock['draw_rect_stroke'] = (b) => {
+  const [x, y, w, h] = ['X', 'Y', 'W', 'H'].map(f => b.getFieldValue(f));
+  return `draw.rectStroke(${x}, ${y}, ${w}, ${h}, ${JSON.stringify(b.getFieldValue('COLOR'))}, ${b.getFieldValue('T')});\n`;
+};
+
+// Control — key with down + up
+javascriptGenerator.forBlock['ctrl_onkey_char'] = (b, g) => {
+  const key = JSON.stringify(b.getFieldValue('KEY'));
+  const down = g.statementToCode(b, 'DOWN');
+  const up = g.statementToCode(b, 'UP');
+  const upArg = up ? `, () => {\n${up}}` : '';
+  return `sensors.keyboard().onKey(${key}, () => {\n${down}}${upArg});\n`;
+};
+
+// ── Pipeline blocks ──────────────────────────────────────────────────────────
+
+Blockly.defineBlocksWithJsonArray([
+  {
+    type: 'pipe_ascii_camera',
+    message0: 'pipe camera %1 → ASCII cols %2 color %3 bg %4 → window %5 %6 × %7',
+    args0: [
+      { type: 'field_number', name: 'INDEX', value: 0, min: 0, precision: 1 },
+      { type: 'field_number', name: 'COLS',  value: 120, min: 10 },
+      { type: 'field_colour', name: 'COLOR', colour: '#00ff41' },
+      { type: 'field_colour', name: 'BG',    colour: '#0d0208' },
+      { type: 'field_input',  name: 'TITLE', text:  'ASCII Cam' },
+      { type: 'field_number', name: 'W',     value: 700, min: 100 },
+      { type: 'field_number', name: 'H',     value: 500, min: 100 },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 80,
+    tooltip: 'Camera → ASCII → spawned window pipeline. One raf loop, auto-cleanup on reset.',
+  },
+  {
+    type: 'pipe_ascii_shader_camera',
+    message0: 'pipe camera %1 → ASCII cols %2 color %3 bg %4 → GLShader %5 → window %6 %7 × %8',
+    args0: [
+      { type: 'field_number', name: 'INDEX', value: 0, min: 0, precision: 1 },
+      { type: 'field_number', name: 'COLS',  value: 120, min: 10 },
+      { type: 'field_colour', name: 'COLOR', colour: '#00ff41' },
+      { type: 'field_colour', name: 'BG',    colour: '#0d0208' },
+      { type: 'field_multilinetext', name: 'GLSL',
+        text: 'vec4 a=texture2D(uVideo,uv);\nfloat l=dot(a.rgb,vec3(.299,.587,.114));\nvec3 rain=.5+.5*cos(6.28*(uv.y+time*.4+vec3(0,.33,.67)));\ngl_FragColor=vec4(rain*l,1.);' },
+      { type: 'field_input',  name: 'TITLE', text:  'ASCII Cam' },
+      { type: 'field_number', name: 'W',     value: 700, min: 100 },
+      { type: 'field_number', name: 'H',     value: 500, min: 100 },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 80,
+    tooltip: 'Camera → ASCII → GLShader → window pipeline.',
+  },
+  {
+    type: 'pipe_camera_glshader',
+    message0: 'pipe camera %1 → GLShader %2 → window %3 %4 × %5',
+    args0: [
+      { type: 'field_number', name: 'INDEX', value: 0, min: 0, precision: 1 },
+      { type: 'field_multilinetext', name: 'GLSL',
+        text: 'vec4 c=texture2D(uVideo,uv);\nfloat g=dot(c.rgb,vec3(.299,.587,.114));\ngl_FragColor=vec4(g,g*.5,1.-g,1.);' },
+      { type: 'field_input',  name: 'TITLE', text:  'Camera Shader' },
+      { type: 'field_number', name: 'W',     value: 700, min: 100 },
+      { type: 'field_number', name: 'H',     value: 500, min: 100 },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 80,
+    tooltip: 'Camera → GLShader → window pipeline. uVideo samples the camera feed.',
+  },
+  {
+    type: 'pipe_pixelate_camera',
+    message0: 'pipe camera %1 → pixelate block size %2 → window %3 %4 × %5',
+    args0: [
+      { type: 'field_number', name: 'INDEX', value: 0, min: 0, precision: 1 },
+      { type: 'field_number', name: 'BLOCK', value: 20, min: 2 },
+      { type: 'field_input',  name: 'TITLE', text: 'Pixelate' },
+      { type: 'field_number', name: 'W',     value: 700, min: 100 },
+      { type: 'field_number', name: 'H',     value: 500, min: 100 },
+    ],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 80,
+    tooltip: 'Camera → pixelate mosaic → window pipeline.',
+  },
+]);
+
+javascriptGenerator.forBlock['pipe_ascii_camera'] = (b) => {
+  const idx   = b.getFieldValue('INDEX');
+  const cols  = b.getFieldValue('COLS');
+  const color = JSON.stringify(b.getFieldValue('COLOR'));
+  const bg    = JSON.stringify(b.getFieldValue('BG'));
+  const title = JSON.stringify(b.getFieldValue('TITLE'));
+  const w     = b.getFieldValue('W');
+  const h     = b.getFieldValue('H');
+  return `const _cam${idx} = await Camera.open({ index: ${idx} });\npipe(_cam${idx}).ascii({ cols: ${cols}, color: ${color}, bg: ${bg} }).show(${title}, { w: ${w}, h: ${h} });\n`;
+};
+
+javascriptGenerator.forBlock['pipe_ascii_shader_camera'] = (b) => {
+  const idx   = b.getFieldValue('INDEX');
+  const cols  = b.getFieldValue('COLS');
+  const color = JSON.stringify(b.getFieldValue('COLOR'));
+  const bg    = JSON.stringify(b.getFieldValue('BG'));
+  const glsl  = b.getFieldValue('GLSL');
+  const title = JSON.stringify(b.getFieldValue('TITLE'));
+  const w     = b.getFieldValue('W');
+  const h     = b.getFieldValue('H');
+  return `const _cam${idx} = await Camera.open({ index: ${idx} });\npipe(_cam${idx}).ascii({ cols: ${cols}, color: ${color}, bg: ${bg} }).glshader(\`${glsl}\`).show(${title}, { w: ${w}, h: ${h} });\n`;
+};
+
+javascriptGenerator.forBlock['pipe_camera_glshader'] = (b) => {
+  const idx   = b.getFieldValue('INDEX');
+  const glsl  = b.getFieldValue('GLSL');
+  const title = JSON.stringify(b.getFieldValue('TITLE'));
+  const w     = b.getFieldValue('W');
+  const h     = b.getFieldValue('H');
+  return `const _cam${idx} = await Camera.open({ index: ${idx} });\npipe(_cam${idx}).glshader(\`${glsl}\`).show(${title}, { w: ${w}, h: ${h} });\n`;
+};
+
+javascriptGenerator.forBlock['pipe_pixelate_camera'] = (b) => {
+  const idx   = b.getFieldValue('INDEX');
+  const block = b.getFieldValue('BLOCK');
+  const title = JSON.stringify(b.getFieldValue('TITLE'));
+  const w     = b.getFieldValue('W');
+  const h     = b.getFieldValue('H');
+  return `const _cam${idx} = await Camera.open({ index: ${idx} });\npipe(_cam${idx}).pixelate({ blockSize: ${block} }).show(${title}, { w: ${w}, h: ${h} });\n`;
+};
+
 // ── Toolbox ──────────────────────────────────────────────────────────────────
 
 export const TOOLBOX = {
@@ -1541,6 +1890,7 @@ export const TOOLBOX = {
         { kind: 'block', type: 'ctrl_interval' },
         { kind: 'block', type: 'ctrl_timeout' },
         { kind: 'block', type: 'ctrl_onkey' },
+        { kind: 'block', type: 'ctrl_onkey_char' },
         { kind: 'block', type: 'ctrl_stop' },
         { kind: 'block', type: 'ctrl_pause' },
         { kind: 'block', type: 'ctrl_resume' },
@@ -1558,6 +1908,12 @@ export const TOOLBOX = {
         { kind: 'block', type: 'audio_distort' },
         { kind: 'block', type: 'audio_volume' },
         { kind: 'block', type: 'audio_connect' },
+        { kind: 'block', type: 'audio_filter' },
+        { kind: 'block', type: 'audio_meter' },
+        { kind: 'block', type: 'audio_meter_value' },
+        { kind: 'block', type: 'audio_chain' },
+        { kind: 'block', type: 'audio_attack' },
+        { kind: 'block', type: 'audio_release' },
         // Audio visualizer
         {
           kind: 'block', type: 'audio_viz_start',
@@ -1632,6 +1988,8 @@ export const TOOLBOX = {
         { kind: 'block', type: 'draw_bg' },
         { kind: 'block', type: 'canvas_fill_rect' },
         { kind: 'block', type: 'canvas_fill_circle' },
+        { kind: 'block', type: 'draw_ring' },
+        { kind: 'block', type: 'draw_rect_stroke' },
         { kind: 'block', type: 'draw_line' },
         { kind: 'block', type: 'draw_text' },
         { kind: 'block', type: 'canvas_clear' },
@@ -1639,6 +1997,8 @@ export const TOOLBOX = {
         { kind: 'block', type: 'draw_reset' },
         { kind: 'block', type: 'canvas_blur' },
         { kind: 'block', type: 'canvas_layer_opacity' },
+        { kind: 'block', type: 'canvas_blend_mode' },
+        { kind: 'block', type: 'draw_pixelate' },
       ],
     },
     {
@@ -1700,6 +2060,17 @@ export const TOOLBOX = {
       ],
     },
     {
+      kind: 'category', name: 'Pipeline', colour: 80,
+      contents: [
+        { kind: 'block', type: 'pipe_ascii_camera' },
+        {
+          kind: 'block', type: 'pipe_ascii_shader_camera',
+        },
+        { kind: 'block', type: 'pipe_camera_glshader' },
+        { kind: 'block', type: 'pipe_pixelate_camera' },
+      ],
+    },
+    {
       kind: 'category', name: 'Windows', colour: 200,
       contents: [
         { kind: 'block', type: 'wm_layout' },
@@ -1707,6 +2078,8 @@ export const TOOLBOX = {
         { kind: 'block', type: 'wm_move' },
         { kind: 'block', type: 'wm_resize_win' },
         { kind: 'block', type: 'wm_close_win' },
+        { kind: 'block', type: 'wm_set_z' },
+        { kind: 'block', type: 'wm_set_opacity' },
         { kind: 'block', type: 'wm_spawn_html' },
         { kind: 'block', type: 'wm_spawn_camera' },
         { kind: 'block', type: 'wm_spawn_canvas' },
@@ -1839,6 +2212,15 @@ export const TOOLBOX_CATEGORY_META = TOOLBOX.contents.map(c => {
   return { name: c.name, hue, blocks };
 });
 
+// Dynamic user-library category — populated at boot by populateLibraryBlocks()
+TOOLBOX_CATEGORY_META.push({ name: 'My Library', hue: 270, blocks: [] });
+
+// Add a registered block type to a palette category (used by window.__ar_applyLibraryBlock)
+export function addBlockToCategoryMeta(categoryName, blockType) {
+  const cat = TOOLBOX_CATEGORY_META.find(c => c.name === categoryName);
+  if (cat) cat.blocks.push({ type: blockType, label: blockType.replace(/^user_/, '').replace(/_/g, ' ') });
+}
+
 export function onPaletteClick(paletteWorkspace, callback) {
   paletteWorkspace.getInjectionDiv().addEventListener('pointerdown', e => {
     const g = e.target.closest('g.blocklyBlock');
@@ -1861,4 +2243,16 @@ export function hideInternalToolbox(workspace) {
   const orig = tb.position.bind(tb);
   tb.position = () => { el.style.display = 'none'; };
   Blockly.svgResize(workspace);
+}
+
+/**
+ * Dynamically register Blockly blocks for a plugin / registerAPI extension.
+ * @param {string} _name — API name (unused, satisfies applier contract)
+ * @param {Array<{definition: object, generator: function}>} blocksDefs
+ */
+export function applyExternalBlocks(_name, blocksDefs) {
+  for (const { definition, generator } of blocksDefs) {
+    Blockly.defineBlocksWithJsonArray([definition]);
+    javascriptGenerator.forBlock[definition.type] = generator;
+  }
 }

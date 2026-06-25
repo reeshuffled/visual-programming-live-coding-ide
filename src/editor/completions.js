@@ -374,8 +374,28 @@ export const TOOLKIT_CATEGORIES = [
       },
       {
         label: "load audio file",
-        code: "const p = audio.player('https://example.com/sound.mp3');\nawait p.load();\np.start();",
-        hint: "Load and play an audio file URL",
+        code: "const file = audio.load('https://example.com/sound.mp3');\nawait file.ready;\nfile.play();",
+        hint: "Load a remote audio file and play it. await file.ready before play() to ensure the buffer is loaded.",
+      },
+      {
+        label: "upload audio file",
+        code: "const file = await audio.upload();\nif (file) { await file.ready; file.play(); }",
+        hint: "Open a file picker and load the chosen audio file. Returns null if cancelled.",
+      },
+      {
+        label: "audio FX chain",
+        code: "const file = audio.load('https://example.com/sound.mp3');\nawait file.ready;\nfile.filter('lowpass', 800).reverb(2).volume(-6).play();",
+        hint: "Chain effects on a loaded file: .filter(type, freq, Q), .reverb(decay), .eq(lo,mid,hi), .delay(time, feedback), .pitchShift(semitones)",
+      },
+      {
+        label: "audio.onTime callback",
+        code: "const file = audio.load('https://example.com/sound.mp3');\nawait file.ready;\nfile.onTime(5, () => draw.bg('red'));\nfile.onTime(10, () => draw.bg('blue'));\nfile.play();",
+        hint: "Fire callbacks at specific timestamps during playback (seconds). Resets on file.stop().",
+      },
+      {
+        label: "seek + loop",
+        code: "const file = audio.load('https://example.com/sound.mp3');\nawait file.ready;\nfile.loop(true).seek(30).play();\n// file.pause();  file.stop();  file.currentTime",
+        hint: "Seek to a position (seconds), enable looping, pause/stop, read currentTime and duration.",
       },
     ],
   },
@@ -591,6 +611,31 @@ audio.start();`,
         code: "// Make sure mic toggle is on\nconst fftTex = audio.fftCanvas('mic', 256);\n\nconst s = new Shader(`\n  let amp = textureSample(video, videoSampler, vec2f(uv.x, 0.5)).r;\n  let glow = amp * amp * 3.0;\n  return vec4f(glow, glow * 0.3, glow * 0.1, 1.0);\n`, { video: fftTex }).start();",
         hint: "audio.fftCanvas('mic') reads the harness mic analyser directly into a texture — full spectrum, no Tone nodes needed.",
       },
+      {
+        label: "audio.fft signal (master)",
+        code: "// audio.fft taps the master output — no source needed\nconst s = new Shader(({ uv, time, custom }) => {\n  const bass = custom.x;\n  const high = custom.w;\n  return [uv.x * bass * 3.0, uv.y * 0.5, high * 2.0, 1.0];\n});\ns.bind(audio.fft);\ns.start();",
+        hint: "audio.fft is a master-output signal: { value, bass, mid, high, fft }. Taps Tone.Destination automatically. Use .bind(audio.fft) on a Shader to fill custom.x/y/z/w each frame.",
+      },
+      {
+        label: "audio.spectrogram",
+        code: "const synth = audio.fm();\nconst spec = audio.spectrogram(synth, { bins: 256, width: 512, height: 256, palette: 'rainbow' });\ndocument.getElementById('canvasWrapper')?.appendChild(spec.canvas);\nObject.assign(spec.canvas.style, { position:'absolute', top:'0', left:'0', width:'100%', height:'100%' });\n\nsetInterval(() => synth.play('C3', '4n'), 500);\naudio.start();",
+        hint: "audio.spectrogram(source, opts) → SpectrogramCanvas — scrolling frequency/time map. Palettes: rainbow, thermal, cool, mono. .canvas gives the live HTMLCanvasElement. source: Tone node, 'mic', or signal object.",
+      },
+      {
+        label: "audio.pianoRoll",
+        code: "const synth = audio.poly();\nconst roll = audio.pianoRoll({ z: 15, speed: 80 });\n\nconst notes = ['C4','D4','E4','G4','A4','C5'];\nsetInterval(() => {\n  const note = notes[Math.floor(Math.random() * notes.length)];\n  synth.play([note, 'G3'], '8n');\n}, 400);\naudio.start();",
+        hint: "audio.pianoRoll() spawns a canvas overlay showing falling note blocks for every Instrument.play() call. opts: { z, opacity, speed (px/s), midiMin, midiMax }.",
+      },
+      {
+        label: "audio.eqWidget",
+        code: "const synth = audio.fm();\nconst eq = audio.eqWidget();\nsynth.chain(eq);\n// Drag sliders or call:\n// eq.low(-6).mid(3).high(-3)\n\nsetInterval(() => synth.play('A3', '4n'), 500);\naudio.start();",
+        hint: "audio.eqWidget() spawns a floating 3-band EQ panel and returns a Tone-compatible node. Chain it: synth.chain(eq). Control programmatically: eq.low(dB), eq.mid(dB), eq.high(dB).",
+      },
+      {
+        label: "file.waveform",
+        code: "const file = audio.load('https://example.com/sound.mp3');\nawait file.ready;\nconst wv = file.waveform({ width: 640, height: 80 });\ndocument.getElementById('canvasWrapper')?.appendChild(wv);\nObject.assign(wv.style, { position:'absolute', bottom:'10px', left:'50%', transform:'translateX(-50%)' });\nfile.loop(true).play();",
+        hint: "file.waveform(opts) → canvas with static waveform + live playhead. Click to seek. opts: { width, height, color, bg }.",
+      },
     ],
   },
   {
@@ -720,6 +765,73 @@ audio.start();`,
         label: "reset effects",
         code: "getLayer(0).reset();",
         hint: "Remove all CSS effects from the layer",
+      },
+      {
+        label: "blend mode",
+        code: "getLayer(1).blendMode('screen');",
+        hint: "CSS mix-blend-mode for layer compositing — 'multiply' 'screen' 'overlay' 'difference' 'lighten' 'darken' 'hard-light' 'soft-light' 'exclusion' 'color-burn'",
+      },
+      {
+        label: "pixelate",
+        code: "draw.pixelate(getCanvas(0), 8);",
+        hint: "Render a blocky pixelated copy of any canvas onto the draw target — pixelate(source, blockSize, x?, y?, w?, h?)",
+      },
+      {
+        label: "ASCII art",
+        code: "const art = draw.toASCII(getCanvas(0), { cols: 80 });\nconst id = wm.spawn('ASCII', { type: 'html', html: '', w: 600, h: 400, onClose: stopRunning });\ndocument.getElementById(id)?.querySelector('.wm-body').appendChild(art.el);\nsetInterval(() => art.update(getCanvas(0)), 50);",
+        hint: "Convert canvas to ASCII <pre> — toASCII(canvas, { cols, rows, charset, bg, color }) → { el, update(canvas) }",
+      },
+      {
+        label: "edit image",
+        code: "const img = editImage(await Media.image('https://example.com/photo.jpg'));\nimg.crop(100, 0, 800, 600).rotate(15);\ndraw.image(img.toCanvas(), 0, 0);",
+        hint: "Non-destructive image pipeline — editImage(src).crop(x,y,w,h).rotate(deg).filter(cssStr).flipH().flipV().blend(other,'screen').toCanvas()",
+      },
+    ],
+  },
+  {
+    name: "Pipeline",
+    commands: [
+      {
+        label: "ASCII camera",
+        code: "const cam = await Camera.open();\npipe(cam)\n  .ascii({ cols: 120, color: '#00ff41', bg: '#0d0208' })\n  .show('ASCII Cam', { w: 700, h: 500 });",
+        hint: "pipe(source) starts a render pipeline. .ascii(opts) renders ASCII art to a canvas. .show(title, {w,h}) spawns a window.",
+        tags: ["pipe", "ascii", "camera", "pipeline"],
+      },
+      {
+        label: "ASCII + shader",
+        code: "const cam = await Camera.open();\npipe(cam)\n  .ascii({ cols: 150, color: '#00ff41', bg: '#0d0208' })\n  .glshader(`\n    vec4 a = texture2D(uVideo, uv);\n    float l = dot(a.rgb, vec3(.299,.587,.114));\n    vec3 rain = .5+.5*cos(6.28*(uv.y+time*.4+vec3(0,.33,.67)));\n    gl_FragColor = vec4(rain*l, 1.);\n  `)\n  .show('ASCII Cam', { w: 700, h: 500 });",
+        hint: "Chain ASCII then a GLSL color shader — one raf loop, auto-cleanup on reset. No captureWindow needed.",
+        tags: ["pipe", "ascii", "glshader", "shader", "pipeline", "camera"],
+      },
+      {
+        label: "camera → shader",
+        code: "const cam = await Camera.open();\npipe(cam)\n  .glshader(`\n    vec4 c = texture2D(uVideo, uv);\n    float g = dot(c.rgb, vec3(.299,.587,.114));\n    gl_FragColor = vec4(g, g*0.5, 1.0-g, 1.0);\n  `)\n  .show('Camera Shader', { w: 700, h: 500 });",
+        hint: "Direct camera → GLShader pipeline. uVideo samples the camera feed.",
+        tags: ["pipe", "glshader", "shader", "camera", "pipeline"],
+      },
+      {
+        label: "pixelate camera",
+        code: "const cam = await Camera.open();\npipe(cam)\n  .pixelate({ blockSize: 20 })\n  .show('Pixelate', { w: 700, h: 500 });",
+        hint: "Mosaic/pixelate stage — blockSize controls pixel block size.",
+        tags: ["pipe", "pixelate", "camera", "pipeline"],
+      },
+      {
+        label: "fx filter",
+        code: "const cam = await Camera.open();\npipe(cam)\n  .fx('hue-rotate(120deg) saturate(2)')\n  .show('FX', { w: 700, h: 500 });",
+        hint: ".fx(cssFilter) applies any CSS filter string — blur, hue-rotate, invert, saturate, sepia, etc.",
+        tags: ["pipe", "fx", "filter", "camera", "pipeline"],
+      },
+      {
+        label: "canvas → pipeline",
+        code: "pipe(getCanvas(0))\n  .ascii({ cols: 80, color: '#ff6600' })\n  .show('Canvas ASCII', { w: 600, h: 400 });",
+        hint: "Pass any canvas as source — pipe() accepts CameraStream, canvas, video, GLShader, Shader, or Layer.",
+        tags: ["pipe", "ascii", "canvas", "pipeline"],
+      },
+      {
+        label: "custom stage",
+        code: "const cam = await Camera.open();\npipe(cam)\n  .use(src => {\n    const canvas = document.createElement('canvas');\n    canvas.width = 800; canvas.height = 600;\n    const ctx = canvas.getContext('2d');\n    return {\n      canvas,\n      read() {\n        ctx.filter = 'invert(1)';\n        ctx.drawImage(src, 0, 0, canvas.width, canvas.height);\n        ctx.filter = 'none';\n      }\n    };\n  })\n  .show('Custom Stage', { w: 700, h: 500 });",
+        hint: ".use(factory) — custom pipeline stage. factory(srcDrawable) called once at start, returns { canvas, read() }. read() called every frame.",
+        tags: ["pipe", "use", "custom", "stage", "pipeline", "extensible"],
       },
     ],
   },
@@ -926,6 +1038,11 @@ audio.start();`,
         code: "// Share one sampling loop, multiple triggers\nconst sig = video.signal('camera', { x: 0.5, y: 0.5, radius: 0.2 });\nconst kick  = audio.kick();\nconst synth = audio.fm();\n\nvideo.onMotion(sig, 0.1, () => kick.play('C1', '8n'));\nvideo.onBrightness(sig, 0.6,\n  () => synth.play('C5', '16n'),\n  () => synth.play('G3', '16n')\n);\naudio.start();",
         hint: "Pass an existing video.signal() object as source to onMotion/onBrightness — reuses the same pixel sampling loop instead of creating a new one per trigger.",
       },
+      {
+        label: "cam.flip — mirror camera",
+        code: "const cam = await Camera.open();\ncam.flip(true);   // mirror horizontally\n// cam.flip(false) to undo\n// Or click the ↔ button in the toolbar when camera is on",
+        hint: "cam.flip(bool) mirrors the Camera.open() video element horizontally. The toolbar ↔ button mirrors the main toolbar camera canvas.",
+      },
     ],
   },
   {
@@ -978,17 +1095,17 @@ audio.start();`,
       },
       {
         label: "spawn html",
-        code: "const id = wm.spawn('Info', { type: 'html', html: '<h2>hello</h2>' });\n// wm.close(id);",
-        hint: "Spawn a floating window with arbitrary HTML content",
+        code: "const id = wm.spawn('Info', { type: 'html', html: '<h2>hello</h2>', onClose: stopRunning });\n// wm.close(id);",
+        hint: "Spawn a floating window with arbitrary HTML content. onClose: fn → called when window is closed (e.g. stopRunning)",
       },
       {
         label: "spawn image",
-        code: "const src = await wm.pickFile('photo');\nwm.spawn('Photo', { type: 'image', src, w: 480, h: 360 });",
+        code: "const src = await wm.pickFile('photo');\nwm.spawn('photo', { type: 'image', src, w: 480, h: 360 });",
         hint: "Pick an image file once (cached by key), spawn it in a window",
       },
       {
         label: "spawn video",
-        code: "const src = await wm.pickFile('clip');\nwm.spawn('Video', { type: 'video', src, w: 640, h: 480, controls: true });",
+        code: "const src = await wm.pickFile('clip');\nwm.spawn('video', { type: 'video', src, w: 640, h: 480, controls: true });",
         hint: "Pick a video file once (cached by key), spawn it in a window",
       },
       {
@@ -1003,12 +1120,12 @@ audio.start();`,
       },
       {
         label: "spawn camera",
-        code: "const id = wm.spawn('Cam', { type: 'camera', w: 320, h: 240 });",
+        code: "const id = wm.spawn('camera', { type: 'camera', w: 320, h: 240 });",
         hint: "Spawn a window mirroring the camera feed",
       },
       {
         label: "spawn canvas",
-        code: "const id = wm.spawn('Canvas', { type: 'canvas', z: 0, w: 640, h: 480 });",
+        code: "const id = wm.spawn('canvas', { type: 'canvas', z: 0, w: 640, h: 480 });",
         hint: "Spawn a window mirroring a canvas layer at z-index z",
       },
       {
@@ -1035,6 +1152,21 @@ audio.start();`,
         label: "list windows",
         code: "console.log(wm.list());",
         hint: "List all current window ids in the desktop",
+      },
+      {
+        label: "spawn transparent",
+        code: "const id = wm.spawn('Overlay', { type: 'html', html: '<p style=\"color:#fff\">Hi</p>', transparent: true, noChrome: true, w: 200, h: 80 });",
+        hint: "Spawn a window transparent and chrome-free immediately — no need to click the ghost button afterwards",
+      },
+      {
+        label: "setZ / setOpacity",
+        code: "wm.setZ(id, 9999);       // raise window stacking order\nwm.setOpacity(id, 0.5); // 0 = invisible, 1 = opaque",
+        hint: "Live-update window z-index and CSS opacity without re-spawning",
+      },
+      {
+        label: "sync video",
+        code: "// Sync button in video window titlebar syncs all other video windows to same currentTime\n// Or call from code:\nconst vid = document.querySelector('#win-spawn-1 video');\nconst t = vid?.currentTime ?? 0;\ndocument.querySelectorAll('.wm-body video').forEach(v => { if (v !== vid) v.currentTime = t; });",
+        hint: "Use the ⟳ button in video window titlebar to sync playback time with all other video windows",
       },
     ],
   },
@@ -1065,6 +1197,11 @@ audio.start();`,
         label: "desktop.add",
         code: "// Add an icon programmatically (e.g. from a fetch'd image)\ndesktop.add('https://example.com/photo.jpg', { name: 'photo.jpg', x: 100, y: 100 });",
         hint: "desktop.add(url, { name, type, x, y }) — create a file icon without drag-drop. type auto-detected from name if omitted.",
+      },
+      {
+        label: "desktop.add — styled",
+        code: "desktop.add(url, {\n  name: 'photo.jpg',\n  x: 100, y: 100,\n  rotation: 15,        // tilt in degrees\n  tint: 180,           // hue-rotate in degrees (thumbnail only)\n  scale: 1.3,          // scale factor\n  animate: 'spin',     // 'spin' | 'bounce' | 'pulse' | CSS animation string\n  labelPosition: 'above', // 'above' | 'below' (default)\n  labelColor: '#ff0',  // label text color\n});",
+        hint: "Visual opts for desktop.add(): rotation (deg), tint (hue-rotate deg on thumb), scale, animate ('spin'/'bounce'/'pulse'), labelPosition ('above'/'below'), labelColor",
       },
       {
         label: "desktop.clear",
@@ -1135,6 +1272,30 @@ audio.start();`,
         label: "battery signal",
         code: "// Returns a Promise — use await or .then()\nconst bat = await sensors.battery();\nconsole.log(`${(bat.level * 100)|0}% ${bat.charging ? 'charging' : 'discharging'}`);\nbat.onChange(b => console.log(b.level, b.charging));",
         hint: "sensors.battery() → Promise → { level (0–1), charging, timeToFull (s), timeToEmpty (s) }. .onChange(fn) on level/charging change. Chrome/Edge only; returns stub on unsupported browsers.",
+      },
+      {
+        label: "sensor gauge — motion",
+        code: "wm.spawn('Motion', { type: 'sensor', source: 'motion', w: 480, h: 200 });",
+        hint: "wm.spawn sensor type — live bar chart for ax/ay/az accelerometer and alpha/beta/gamma orientation. Use toolbar Motion button or spawn in code.",
+        tags: ["sensor", "gauge", "motion", "accelerometer"],
+      },
+      {
+        label: "sensor gauge — gamepad",
+        code: "// Connect gamepad first (press any button to activate)\nwm.spawn('Gamepad', { type: 'sensor', source: 'gamepad', w: 380, h: 200 });",
+        hint: "wm.spawn sensor type — live dial gauges for axes 0–3 and button state indicators.",
+        tags: ["sensor", "gauge", "gamepad", "controller"],
+      },
+      {
+        label: "sensor gauge — geo",
+        code: "wm.spawn('Geolocation', { type: 'sensor', source: 'geo', w: 280, h: 200 });",
+        hint: "wm.spawn sensor type — live lat/lon/alt/speed/heading readout. Browser asks for location permission.",
+        tags: ["sensor", "gauge", "geo", "gps", "location"],
+      },
+      {
+        label: "sensor gauge — battery",
+        code: "wm.spawn('Battery', { type: 'sensor', source: 'battery', w: 220, h: 160 });",
+        hint: "wm.spawn sensor type — live battery level indicator with charging status.",
+        tags: ["sensor", "gauge", "battery"],
       },
     ],
   },
@@ -1239,3 +1400,19 @@ audio.start();`,
     ],
   },
 ];
+
+
+/**
+ * Add snippet entries to the toolkit API drawer, creating a new category if needed.
+ * Called by api-registry.js when registerAPI is used with ext.toolkit.
+ * @param {string} categoryName
+ * @param {Array<{label: string, code: string, hint: string}>} entries
+ */
+export function addToolkitEntries(categoryName, entries) {
+  const existing = TOOLKIT_CATEGORIES.find(c => c.name === categoryName);
+  if (existing) {
+    existing.commands.push(...entries);
+  } else {
+    TOOLKIT_CATEGORIES.push({ name: categoryName, commands: entries });
+  }
+}

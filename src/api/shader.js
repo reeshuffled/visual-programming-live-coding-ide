@@ -1,4 +1,5 @@
 import { jsToWGSL } from './js-to-wgsl.js';
+import { resolveWGSL, library } from './library.js';
 
 const _shaders = [];
 
@@ -72,7 +73,8 @@ const VIDEO_WGSL = /* wgsl */ `
 
 function wrapFragBody(body, hasVideo = false, helpers = []) {
   const helperWGSL = helpers.length ? '\n' + helpers.join('\n\n') + '\n' : '';
-  const colLine = hasVideo ? '\n  let col    = textureSample(video, videoSampler, uv);' : '';
+  const bodyDeclaresCol = /\blet\s+col\b/.test(body);
+  const colLine = hasVideo && !bodyDeclaresCol ? '\n  let col    = textureSample(video, videoSampler, uv);' : '';
   return (
     UNIFORM_WGSL +
     (hasVideo ? VIDEO_WGSL : "") +
@@ -119,7 +121,7 @@ export class Shader {
   constructor(fragmentBodyOrWGSL, { z = 30, opacity = 1.0, video = null, container = null } = {}) {
     // Accept a JS function — transpiled to WGSL at start() time (after video src is known)
     this._fn      = typeof fragmentBodyOrWGSL === 'function' ? fragmentBodyOrWGSL : null;
-    this._fragSrc = this._fn ? null : fragmentBodyOrWGSL;
+    this._fragSrc = this._fn ? null : resolveWGSL(fragmentBodyOrWGSL);
     this._helpers = [];   // WGSL helper fn strings from jsToWGSL
     this._z = z;
     this._opacity = opacity;
@@ -511,6 +513,12 @@ export class Shader {
     this._videoTex = null;
     this._videoSampler = null;
     this._videoTexSize = null;
+  }
+
+  // Save a named WGSL body (or JS arrow fn) to the user library — persists across projects.
+  // Equivalent to library.wgsl(name, body).
+  static define(name, body) {
+    library.wgsl(name, body);
   }
 }
 

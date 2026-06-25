@@ -1,11 +1,13 @@
 import * as Tone from "tone";
-import { AudioViz } from "./viz.js";
+import { AudioViz, SpectrogramCanvas, PianoRollViz, EQWidget, _noteHooks } from "./viz.js";
 
 const _nativeSetInterval = window.setInterval.bind(window);
 const _nativeClearInterval = window.clearInterval.bind(window);
+const _nativeSetTimeout = window.setTimeout.bind(window);
 
 const _tracked = [];
 const _cleanupFns = [];
+let _masterFftSignal = null;
 let _recognition = null;
 const _wordHandlers = new Map();
 const _speechHandlers = [];
@@ -83,12 +85,22 @@ function _ensureRecognition() {
 export function cleanupAudio() {
   Tone.getTransport().stop();
   Tone.getTransport().cancel();
-  _tracked.forEach((d) => {
-    try { d.dispose(); } catch (_) {}
-  });
-  _tracked.length = 0;
-  _cleanupFns.forEach(f => { try { f(); } catch (_) {} });
-  _cleanupFns.length = 0;
+
+  // _cleanupFns: RAF/interval cancels and AudioFile state teardown — immediate.
+  const toCleanup = _cleanupFns.splice(0);
+  toCleanup.forEach(f => { try { f(); } catch (_) {} });
+
+  // Tone nodes: fade first to prevent click/pop on oscillator disconnect,
+  // then dispose. Splice atomically so a new run doesn't get caught in this.
+  const toDispose = _tracked.splice(0);
+  try { Tone.getDestination().volume.rampTo(-80, 0.08); } catch (_) {}
+  _nativeSetTimeout(() => {
+    toDispose.forEach(d => { try { d.dispose(); } catch (_) {} });
+    try { Tone.getDestination().volume.rampTo(0, 0.05); } catch (_) {}
+  }, 100);
+
+  _masterFftSignal = null;
+  _noteHooks.length = 0;
   if (_recognition) {
     _recognition.onend = null;
     try { _recognition.stop(); } catch (_) {}
@@ -208,6 +220,10 @@ class Instrument {
   }
   play(...args) {
     this._.triggerAttackRelease(...args);
+    if (_noteHooks.length > 0) {
+      const [note, dur] = args;
+      for (const h of _noteHooks) { try { h({ note, dur, type: 'play' }); } catch (_) {} }
+    }
     return this;
   }
   attack(...args) {
@@ -230,6 +246,288 @@ class Instrument {
     this._.disconnect();
     this._.chain(...nodes, Tone.getDestination());
     return this;
+  }
+}
+
+function _makeSignal(analyser, bins) {
+  let _cached = null, _cacheTime = -1;
+  const getFft = () => {
+    const now = performance.now();
+    if (now - _cacheTime > 8) {
+      _cached = _readFft(analyser, bins);
+      _cacheTime = now;
+    }
+    return _cached ?? new Float32Array(bins);
+  };
+  const avg = (f, s, e) => { let sum = 0; for (let i = s; i < e; i++) sum += f[i]; return sum / (e - s) || 0; };
+  const sig = {
+    get fft()   { return getFft(); },
+    get value() { return avg(getFft(), 0, bins); },
+    get bass()  { return avg(getFft(), 0, Math.floor(bins * 0.1)); },
+    get mid()   { return avg(getFft(), Math.floor(bins * 0.1), Math.floor(bins * 0.5)); },
+    get high()  { return avg(getFft(), Math.floor(bins * 0.5), bins); },
+    stream(fn) {
+      let rafId;
+      const frame = () => { fn(sig); rafId = requestAnimationFrame(frame); };
+      rafId = requestAnimationFrame(frame);
+      _cleanupFns.push(() => cancelAnimationFrame(rafId));
+      return sig;
+    },
+  };
+  return sig;
+}
+
+// ── AudioFile ─────────────────────────────────────────────────────────────
+// Returned by audio.load() and audio.upload(). Full playback + FX chain API.
+
+class AudioFile {
+  constructor(url) {
+    this._url = url;
+    this._player = new Tone.Player({ url });
+    this._fxChain = [];
+    this._playOffset = 0;
+    this._startedAt = 0;
+    this._playing = false;
+    this._paused = false;
+    this._onTimeCallbacks = [];
+    this._pollId = null;
+    this.ready = this._player.loaded;
+    this._reconnect();
+    _cleanupFns.push(() => this._dispose());
+  }
+
+  _reconnect() {
+    try { this._player.disconnect(); } catch (_) {}
+    if (this._fxChain.length) {
+      this._player.chain(...this._fxChain, Tone.getDestination());
+    } else {
+      this._player.toDestination();
+    }
+  }
+
+  play(offset) {
+    if (this._playing) {
+      try { this._player.stop(); } catch (_) {}
+    }
+    this._playOffset = offset !== undefined ? offset : (this._paused ? this._playOffset : 0);
+    this._startedAt = Tone.now();
+    this._playing = true;
+    this._paused = false;
+    this._reconnect();
+    try { this._player.start(Tone.now(), this._playOffset); } catch (_) {}
+    this._startPoll();
+    return this;
+  }
+
+  pause() {
+    if (!this._playing) return this;
+    this._playOffset = this.currentTime;
+    try { this._player.stop(); } catch (_) {}
+    this._playing = false;
+    this._paused = true;
+    this._stopPoll();
+    return this;
+  }
+
+  stop() {
+    try { this._player.stop(); } catch (_) {}
+    this._playing = false;
+    this._paused = false;
+    this._playOffset = 0;
+    this._stopPoll();
+    // reset onTime fired flags so they fire again on next play
+    for (const cb of this._onTimeCallbacks) cb.fired = false;
+    return this;
+  }
+
+  seek(t) {
+    const wasPlaying = this._playing;
+    if (wasPlaying) try { this._player.stop(); } catch (_) {}
+    this._playOffset = t;
+    if (wasPlaying) {
+      this._startedAt = Tone.now();
+      try { this._player.start(Tone.now(), this._playOffset); } catch (_) {}
+    }
+    return this;
+  }
+
+  get currentTime() {
+    if (!this._playing) return this._playOffset;
+    const elapsed = Tone.now() - this._startedAt;
+    const dur = this.duration;
+    return dur > 0 ? Math.min(this._playOffset + elapsed, dur) : this._playOffset + elapsed;
+  }
+
+  get duration() {
+    return this._player.buffer?.duration ?? 0;
+  }
+
+  get state() {
+    if (this._playing) return 'started';
+    if (this._paused) return 'paused';
+    return 'stopped';
+  }
+
+  loop(enabled = true) {
+    this._player.loop = enabled;
+    return this;
+  }
+
+  volume(db) {
+    this._player.volume.value = db;
+    return this;
+  }
+
+  connect(node) {
+    this._fxChain = [node];
+    this._reconnect();
+    return this;
+  }
+
+  chain(...nodes) {
+    this._fxChain = nodes;
+    this._reconnect();
+    return this;
+  }
+
+  filter(type = 'lowpass', freq = 1000, Q = 1) {
+    this._fxChain.push(track(new Tone.Filter({ type, frequency: freq, Q })));
+    this._reconnect();
+    return this;
+  }
+
+  reverb(decay = 1.5) {
+    this._fxChain.push(track(new Tone.Reverb({ decay })));
+    this._reconnect();
+    return this;
+  }
+
+  eq(low = 0, mid = 0, high = 0) {
+    this._fxChain.push(track(new Tone.EQ3(low, mid, high)));
+    this._reconnect();
+    return this;
+  }
+
+  delay(time = 0.25, feedback = 0.5) {
+    this._fxChain.push(track(new Tone.FeedbackDelay(time, feedback)));
+    this._reconnect();
+    return this;
+  }
+
+  pitchShift(semitones = 0) {
+    this._fxChain.push(track(new Tone.PitchShift(semitones)));
+    this._reconnect();
+    return this;
+  }
+
+  distort(amount = 0.4) {
+    this._fxChain.push(track(new Tone.Distortion(amount)));
+    this._reconnect();
+    return this;
+  }
+
+  // Returns a live signal object ({ value, bass, mid, high, fft }) from this file's output.
+  signal(bins = 256) {
+    const analyser = _makeAnalyser(this._player, bins);
+    return _makeSignal(analyser, bins);
+  }
+
+  // Canvas showing waveform + live playhead. Click to seek.
+  // Returns an HTMLCanvasElement; append to DOM or pass to wm.spawn as html content.
+  waveform({ width = 512, height = 64, color = '#4ade80', bg = '#111' } = {}) {
+    const canvas = document.createElement('canvas');
+    canvas.width  = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, width, height);
+
+    let offscreen = null;
+
+    this.ready.then(() => {
+      const buffer = this._player.buffer;
+      if (!buffer || typeof buffer.getChannelData !== 'function') return;
+      const data = buffer.getChannelData(0);
+      offscreen = document.createElement('canvas');
+      offscreen.width = width; offscreen.height = height;
+      const oc = offscreen.getContext('2d');
+      oc.fillStyle = bg;
+      oc.fillRect(0, 0, width, height);
+      oc.strokeStyle = color;
+      oc.lineWidth = 1;
+      oc.beginPath();
+      const step = Math.ceil(data.length / width);
+      for (let x = 0; x < width; x++) {
+        let max = 0;
+        for (let i = 0; i < step; i++) {
+          const v = Math.abs(data[x * step + i] ?? 0);
+          if (v > max) max = v;
+        }
+        const h = max * height * 0.9;
+        const mid = height / 2;
+        oc.moveTo(x + 0.5, mid - h / 2);
+        oc.lineTo(x + 0.5, mid + h / 2);
+      }
+      oc.stroke();
+    }).catch(() => {});
+
+    let rafId;
+    const draw = () => {
+      if (offscreen) ctx.drawImage(offscreen, 0, 0);
+      else { ctx.fillStyle = bg; ctx.fillRect(0, 0, width, height); }
+      if (this.duration > 0) {
+        const x = Math.floor((this.currentTime / this.duration) * width);
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.fillRect(x, 0, 2, height);
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.font = '10px monospace';
+        ctx.fillText(this.currentTime.toFixed(1) + 's', Math.min(x + 4, width - 30), height - 4);
+      }
+      rafId = requestAnimationFrame(draw);
+    };
+    draw();
+    _cleanupFns.push(() => cancelAnimationFrame(rafId));
+
+    canvas.style.cursor = 'pointer';
+    canvas.addEventListener('click', (e) => {
+      const r = canvas.getBoundingClientRect();
+      if (r.width > 0) this.seek(((e.clientX - r.left) / r.width) * this.duration);
+    });
+
+    return canvas;
+  }
+
+  // Fires fn once when playback position reaches t (seconds). Resets on stop().
+  onTime(t, fn) {
+    this._onTimeCallbacks.push({ t, fn, fired: false });
+    if (this._playing) this._startPoll();
+    return this;
+  }
+
+  _startPoll() {
+    if (this._pollId) return;
+    this._pollId = _nativeSetInterval(() => this._tick(), 50);
+  }
+
+  _stopPoll() {
+    if (this._pollId) { _nativeClearInterval(this._pollId); this._pollId = null; }
+  }
+
+  // Called per-poll-tick; also callable directly in tests.
+  _tick() {
+    if (!this._playing) return;
+    const ct = this.currentTime;
+    for (const cb of this._onTimeCallbacks) {
+      if (!cb.fired && ct >= cb.t) { cb.fired = true; cb.fn(ct); }
+    }
+  }
+
+  _dispose() {
+    this._stopPoll();
+    this._playing = false;
+    this._paused  = false;
+    this._onTimeCallbacks = [];
+    try { this._player.dispose(); } catch (_) {}
   }
 }
 
@@ -346,6 +644,7 @@ class AudioAPI {
       else if (!above && wasAbove) { wasAbove = false; if (onExit) onExit(); }
     }, 50);
     _cleanupFns.push(() => _nativeClearInterval(id));
+    return this;
   }
 
   // ── Speech ───────────────────────────────────────────────────────────────
@@ -355,12 +654,14 @@ class AudioAPI {
     if (!_wordHandlers.has(key)) _wordHandlers.set(key, []);
     _wordHandlers.get(key).push(fn);
     _ensureRecognition();
+    return this;
   }
 
   // Fires fn with full transcript string on every recognized utterance.
   onSpeech(fn) {
     _speechHandlers.push(fn);
     _ensureRecognition();
+    return this;
   }
 
   // Speak text via browser TTS. opts: { voice, rate (0.1–10), pitch (0–2), volume (0–1), lang }
@@ -375,6 +676,7 @@ class AudioAPI {
       if (v) utt.voice = v;
     }
     speechSynthesis.speak(utt);
+    return this;
   }
 
   // Returns list of available TTS voice names for use with audio.say({ voice: '...' }).
@@ -388,6 +690,35 @@ class AudioAPI {
 
   viz(source, opts = {}) { return new AudioViz(source, opts); }
 
+  // Master-output FFT signal (lazy, auto-connected to Tone.Destination).
+  // Signal contract: { value, fft, bass, mid, high, stream(fn) }
+  get fft() {
+    if (!_masterFftSignal) {
+      const analyser = new Tone.Analyser('fft', 256);
+      track(analyser);
+      try { Tone.getDestination().connect(analyser); } catch (_) {}
+      _masterFftSignal = _makeSignal(analyser, 256);
+      _cleanupFns.push(() => {
+        try { Tone.getDestination().disconnect(analyser); } catch (_) {}
+        _masterFftSignal = null;
+      });
+    }
+    return _masterFftSignal;
+  }
+
+  // Scrolling spectrogram canvas. source: Tone node | 'mic' | signal object.
+  spectrogram(source, opts = {}) { return new SpectrogramCanvas(source, opts); }
+
+  // Piano roll overlay — shows falling note blocks for all Instrument.play() calls.
+  pianoRoll(opts = {}) {
+    const roll = new PianoRollViz(opts);
+    roll.start();
+    return roll;
+  }
+
+  // Floating 3-band EQ panel. Returns a Tone-compatible node for .chain().
+  eqWidget(opts = {}) { return new EQWidget(opts); }
+
   meter() {
     return track(new Tone.Meter());
   }
@@ -398,33 +729,7 @@ class AudioAPI {
   // Live signal object from any audio source (Tone node, Tone.Analyser, 'mic', or Web Audio AnalyserNode).
   // Returns { value, fft, bass, mid, high } — all lazy getters, safe to call every frame.
   signal(source, bins = 256) {
-    const analyser = _makeAnalyser(source, bins);
-    let _cached = null, _cacheTime = -1;
-    const getFft = () => {
-      const now = performance.now();
-      if (now - _cacheTime > 8) {
-        _cached = _readFft(analyser ?? source, bins);
-        _cacheTime = now;
-      }
-      return _cached ?? new Float32Array(bins);
-    };
-    const avg = (f, s, e) => { let sum = 0; for (let i = s; i < e; i++) sum += f[i]; return sum / (e - s) || 0; };
-    const sig = {
-      get fft()   { return getFft(); },
-      get value() { return avg(getFft(), 0, bins); },
-      get bass()  { return avg(getFft(), 0, Math.floor(bins * 0.1)); },
-      get mid()   { return avg(getFft(), Math.floor(bins * 0.1), Math.floor(bins * 0.5)); },
-      get high()  { return avg(getFft(), Math.floor(bins * 0.5), bins); },
-      // RAF-driven push — fn(sig) called every frame, cleaned up on reset
-      stream(fn) {
-        let rafId;
-        const frame = () => { fn(sig); rafId = requestAnimationFrame(frame); };
-        rafId = requestAnimationFrame(frame);
-        _cleanupFns.push(() => cancelAnimationFrame(rafId));
-        return sig;
-      },
-    };
-    return sig;
+    return _makeSignal(_makeAnalyser(source, bins), bins);
   }
 
   // Live bins×1 canvas where R channel = FFT magnitude 0–1. Feed into Shader as video:.
@@ -457,6 +762,32 @@ class AudioAPI {
   // ── Players ──────────────────────────────────────────────────────────────
   player(url) { return track(new Tone.Player(url).toDestination()); }
   sampler(urls, onload) { return track(new Tone.Sampler({ urls, onload }).toDestination()); }
+
+  // Returns an AudioFile: full playback API with FX chaining.
+  // await file.ready before calling play() to ensure the buffer is loaded.
+  load(url) {
+    return new AudioFile(url);
+  }
+
+  // Opens a file picker. Resolves to an AudioFile, or null if cancelled.
+  async upload() {
+    const url = await new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'audio/*';
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      const cleanup = () => { try { document.body.removeChild(input); } catch (_) {} };
+      input.addEventListener('change', () => {
+        cleanup();
+        const file = input.files[0];
+        resolve(file ? URL.createObjectURL(file) : null);
+      });
+      input.addEventListener('cancel', () => { cleanup(); resolve(null); });
+      input.click();
+    });
+    return url ? this.load(url) : null;
+  }
 
   // ── Pattern scheduling ───────────────────────────────────────────────────
   pat(str, instrument, opts = {}) {

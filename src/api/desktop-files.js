@@ -85,6 +85,21 @@ function _injectCSS() {
 .dt-icon:hover { background: rgba(255,255,255,0.07); }
 .dt-icon.dt-sel { background: rgba(100,150,255,0.22); outline: 1px solid rgba(100,160,255,0.45); }
 .dt-icon.dt-editor-icon .dt-glyph { background: #1a2a3a; border: 1px solid #2a4a6a; font-size: 26px; color: #6ab0f5; }
+.dt-icon.dt-active::after {
+  content: ''; position: absolute; top: 4px; right: 4px;
+  width: 8px; height: 8px; background: #4caf50; border-radius: 50%;
+  border: 1.5px solid rgba(0,0,0,0.5); pointer-events: none;
+}
+.dt-trash {
+  position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+  width: 52px; height: 52px; border-radius: 50%;
+  background: rgba(200,50,50,0.12); border: 2px dashed rgba(200,50,50,0.4);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; color: rgba(200,50,50,0.45); z-index: 99996;
+  pointer-events: none; opacity: 0; transition: opacity 0.15s, transform 0.15s;
+}
+.dt-trash.dt-trash-show { opacity: 1; }
+.dt-trash.dt-trash-hover { background: rgba(200,50,50,0.45); transform: translateX(-50%) scale(1.18); color: rgba(255,80,80,0.9); }
 .dt-icon.dt-folder-icon .dt-glyph { background: #2a2010; border: 1px solid #5a4010; font-size: 26px; color: #f0a830; }
 .dt-thumb {
   width: 60px; height: 60px; object-fit: cover; border-radius: 5px;
@@ -148,6 +163,27 @@ const _GLYPH = { image: '🖼', video: '🎬', audio: '🎵', code: '📄', file
 const _FA_GLYPH = { editor: 'fa-solid fa-file-code', folder: 'fa-solid fa-folder' };
 const _WM    = { image: 'image', video: 'video' };
 
+// ── Trash zone ────────────────────────────────────────────────────────────────
+
+let _trashEl = null;
+
+function _ensureTrash() {
+  if (_trashEl || !_desktop) return;
+  _trashEl = document.createElement('div');
+  _trashEl.className = 'dt-trash';
+  _trashEl.innerHTML = '🗑';
+  _desktop.appendChild(_trashEl);
+}
+
+function _trashShow() { _trashEl?.classList.add('dt-trash-show'); }
+function _trashHide() { _trashEl?.classList.remove('dt-trash-show', 'dt-trash-hover'); }
+
+function _overTrash(clientX, clientY) {
+  if (!_trashEl) return false;
+  const r = _trashEl.getBoundingClientRect();
+  return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+}
+
 // ── Icon DOM ──────────────────────────────────────────────────────────────────
 
 function _makeThumb(icon) {
@@ -185,11 +221,42 @@ function _buildEl(icon) {
   el.style.left = icon.x + 'px';
   el.style.top  = icon.y + 'px';
   el.dataset.dtId = icon.id;
-  el.appendChild(_makeThumb(icon));
+
+  const thumb = _makeThumb(icon);
   const lbl = document.createElement('div');
   lbl.className = 'dt-label';
-  lbl.textContent = icon.name;
-  el.appendChild(lbl);
+  lbl.textContent = icon.name.replace(/(\.[^.]+)$/, m => m.toLowerCase());
+
+  const io = icon.iconOpts ?? {};
+  if (io.labelPosition === 'above') {
+    el.appendChild(lbl);
+    el.appendChild(thumb);
+  } else {
+    el.appendChild(thumb);
+    el.appendChild(lbl);
+  }
+  if (io.labelColor) lbl.style.color = io.labelColor;
+
+  // CSS transforms on the icon container
+  const transforms = [];
+  if (io.rotation) transforms.push(`rotate(${io.rotation}deg)`);
+  if (io.scale)    transforms.push(`scale(${io.scale})`);
+  if (transforms.length) el.style.transform = transforms.join(' ');
+
+  // Tint on thumbnail
+  if (io.tint && thumb) thumb.style.filter = `hue-rotate(${io.tint}deg)`;
+
+  // Animate
+  if (io.animate) {
+    const anim = { spin: 'ar-icon-spin 2s linear infinite', bounce: 'ar-icon-bounce 0.8s ease infinite', pulse: 'ar-icon-pulse 1s ease infinite' };
+    el.style.animation = anim[io.animate] ?? io.animate;
+    if (!document.getElementById('dt-anim-styles')) {
+      const st = document.createElement('style');
+      st.id = 'dt-anim-styles';
+      st.textContent = `@keyframes ar-icon-spin{to{transform:rotate(360deg)}}@keyframes ar-icon-bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}@keyframes ar-icon-pulse{0%,100%{opacity:1}50%{opacity:0.4}}`;
+      document.head.appendChild(st);
+    }
+  }
 
   let _t = 0;
   el.addEventListener('click', e => {
@@ -215,7 +282,7 @@ function _buildEl(icon) {
       : [];
     const peerOffsets = peers.map(ic => ({ ic, ox: e.clientX - ic.x, oy: e.clientY - ic.y }));
     const mv = e => {
-      moved = true;
+      if (!moved) { moved = true; _trashShow(); }
       icon.x = Math.max(0, e.clientX - ox);
       icon.y = Math.max(0, e.clientY - oy);
       el.style.left = icon.x + 'px';
@@ -225,11 +292,24 @@ function _buildEl(icon) {
         ic.y = Math.max(0, e.clientY - poy);
         if (ic.el) { ic.el.style.left = ic.x + 'px'; ic.el.style.top = ic.y + 'px'; }
       }
+      if (_trashEl) _trashEl.classList.toggle('dt-trash-hover', _overTrash(e.clientX, e.clientY));
     };
-    const up = () => {
+    const up = e => {
       document.removeEventListener('mousemove', mv);
       document.removeEventListener('mouseup', up);
-      if (moved) _saveDesktopStateDebounced();
+      _trashHide();
+      if (moved && _overTrash(e.clientX, e.clientY)) {
+        // Release into trash — delete icon(s)
+        const toDelete = isMulti ? [..._selIds] : [icon.id];
+        for (const id of toDelete) {
+          const ic = _icons.get(id);
+          if (ic && ic.type !== 'editor') { ic.el?.remove(); _icons.delete(id); _selIds.delete(id); }
+        }
+        _clearSel();
+        _saveDesktopState();
+      } else if (moved) {
+        _saveDesktopStateDebounced();
+      }
     };
     document.addEventListener('mousemove', mv);
     document.addEventListener('mouseup', up);
@@ -273,7 +353,18 @@ function _activate(icon) {
   }
   if (!icon.url) return;
   const wmType = _WM[icon.type];
-  if (wmType) { _wm?.spawn(icon.name, { type: wmType, src: icon.url, w: 560, h: 400 }); return; }
+  if (wmType) {
+    const winId = _wm?.spawn(icon.name.replace(/(\.[^.]+)$/, m => m.toLowerCase()), { type: wmType, src: icon.url, w: 560, h: 400 });
+    if (winId && icon.el) {
+      icon._wmWinId = winId;
+      icon.el.classList.add('dt-active');
+      const poll = setInterval(() => {
+        const w = document.getElementById(winId);
+        if (!w || w.style.display === 'none') { icon.el?.classList.remove('dt-active'); clearInterval(poll); }
+      }, 600);
+    }
+    return;
+  }
   if (icon.type === 'audio') { new Audio(icon.url).play().catch(() => {}); return; }
   if (icon.type === 'code') {
     fetch(icon.url).then(r => r.text()).then(code => {
@@ -381,9 +472,9 @@ function _ctx(icon, cx, cy) {
     sep();
   }
 
-  item(icon.type === 'editor' ? 'Delete editor…' : 'Delete', () => {
+  item(icon.type === 'editor' ? 'Remove editor…' : 'Release', () => {
     if (icon.type === 'editor') {
-      if (!confirm(`Delete "${icon.name}"? This removes the editor and its code permanently.`)) return;
+      if (!confirm(`Remove "${icon.name}"? This removes the editor and its code permanently.`)) return;
       window.__ar_instances?.get(icon.editorId)?.destroy();
     } else {
       icon.el?.remove();
@@ -396,7 +487,7 @@ function _ctx(icon, cx, cy) {
   const allSelected = [..._selIds].filter(id => _icons.has(id));
   if (allSelected.length > 1) {
     sep();
-    item(`Delete all ${allSelected.length} selected`, () => {
+    item(`Release all ${allSelected.length} selected`, () => {
       for (const id of allSelected) {
         const ic = _icons.get(id);
         if (!ic) continue;
@@ -426,14 +517,14 @@ function _ctx(icon, cx, cy) {
 
 // ── Internal add ──────────────────────────────────────────────────────────────
 
-function _addFileIcon(name, mime, url, dropX, dropY, content = null) {
+function _addFileIcon(name, mime, url, dropX, dropY, content = null, iconOpts = null) {
   const type = _classify(name, mime);
   let x = Math.max(4, dropX - 38), y = Math.max(4, dropY - 38);
   for (const f of _icons.values()) {
     if (f.type !== 'editor' && Math.abs(f.x - x) < 80 && Math.abs(f.y - y) < 96) x += 88;
   }
   const id = 'dt-' + (_nextId++);
-  const icon = { id, name, type, url, content, x, y, el: null };
+  const icon = { id, name, type, url, content, x, y, el: null, iconOpts };
   const el = _buildEl(icon);
   icon.el = el;
   _icons.set(id, icon);
@@ -468,6 +559,8 @@ export function addFolderIcon(folderData, x = 20, y = 20) {
 function _initDrop() {
   const d = _desktop;
   if (!d) return;
+
+  _ensureTrash();
 
   d.addEventListener('dragenter', e => {
     if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); d.classList.add('dt-hover'); }
@@ -640,8 +733,11 @@ export function restoreDesktop(icons = []) {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export const DesktopAPI = {
-  add(url, { name = 'file', type, x, y } = {}) {
-    const icon = _addFileIcon(name, type ? '' : name, url, (x ?? 80) + 38, (y ?? 80) + 38);
+  add(url, { name = 'file', type, x, y, rotation, tint, scale, animate, labelPosition, labelColor } = {}) {
+    const iconOpts = (rotation != null || tint != null || scale != null || animate != null || labelPosition != null || labelColor != null)
+      ? { rotation, tint, scale, animate, labelPosition, labelColor }
+      : null;
+    const icon = _addFileIcon(name, type ? '' : name, url, (x ?? 80) + 38, (y ?? 80) + 38, null, iconOpts);
     if (type) icon.type = type;
     return { id: icon.id, name: icon.name, type: icon.type, url: icon.url };
   },

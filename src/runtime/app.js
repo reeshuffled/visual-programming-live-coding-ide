@@ -1,22 +1,27 @@
 import { vision, stopVision, preloadVision } from "../api/vision.js";
-import { TOOLKIT_CATEGORIES } from "../editor/completions.js";
+import { TOOLKIT_CATEGORIES, addToolkitEntries } from "../editor/completions.js";
+import { _registerBuiltin, registerAPI, _setToolkitApplier, _setBlocksApplier } from "./api-registry.js";
 import { initCamera, Camera, cleanupCameras } from "../api/camera.js";
 import { initMic } from "../api/mic.js";
 import { audio, startAudio, cleanupAudio } from "../api/audio.js";
 import { Shader, ShaderFX, cleanupShaders } from "../api/shader.js";
 import { GLShader, GLSL_PRESETS } from "../api/glsl-shader.js";
 import { initPixi, PIXI } from "../api/pixi.js";
-import { AudioViz, cleanupViz } from "../api/viz.js";
+import { AudioViz, SpectrogramCanvas, PianoRollViz, EQWidget, cleanupViz } from "../api/viz.js";
 import { Media, cleanupMedia } from "../api/media.js";
 import { VideoSignalAPI, cleanupVideoSignal } from "../api/video-signal.js";
 import { SensorsAPI, cleanupSensors } from "../api/sensors.js";
 import { DesktopAPI, initDesktop, cleanupDesktop, addFolderIcon } from "../api/desktop-files.js";
 import { initDOMCaptures, captureWindow as _captureWindow, cleanupCaptures } from "../editor/editor-capture.js";
+import { pipe, cleanupPipelines } from "../api/render-pipeline.js";
+import { library, initLibrary, populateLibraryToolkit, populateLibraryBlocks } from "../api/library.js";
 import { initWM } from "../api/wm.js";
 import {
   initPaletteWorkspace, onPaletteClick, resizeBlockly,
-  TOOLBOX_CATEGORY_META, finishBlockRenders,
+  TOOLBOX_CATEGORY_META, finishBlockRenders, applyExternalBlocks,
+  addBlockToCategoryMeta,
 } from "../blocks/blocks.js";
+import { editImage } from "../api/image-edit.js";
 import { EditorInstance } from "../editor/editor-instance.js";
 import { saveProject, loadProject } from "../api/project.js";
 
@@ -35,26 +40,32 @@ const nativeTimers = {
 };
 
 // ── Shared globals exposed to all user code ───────────────────────────────────
-window.vision   = vision;
-window.video    = VideoSignalAPI;
-window.sensors  = SensorsAPI;
-window.desktop  = DesktopAPI;
-window.audio    = audio;
-window.Shader      = Shader;
-window.ShaderFX    = ShaderFX;
-window.GLShader    = GLShader;
-window.GLSL_PRESETS = GLSL_PRESETS;
-window.PIXI        = PIXI;
+// All public APIs go through _registerBuiltin so the registry is the single source
+// of truth. Users call registerAPI() to override or extend any built-in.
+_registerBuiltin('vision',   vision);
+_registerBuiltin('video',    VideoSignalAPI);
+_registerBuiltin('sensors',  SensorsAPI);
+_registerBuiltin('desktop',  DesktopAPI);
+_registerBuiltin('audio',    audio);
+_registerBuiltin('Shader',   Shader);
+_registerBuiltin('ShaderFX', ShaderFX);
+_registerBuiltin('GLShader', GLShader);
+_registerBuiltin('GLSL_PRESETS', GLSL_PRESETS);
+_registerBuiltin('pipe',    pipe);
+_registerBuiltin('PIXI',     PIXI);
 // Vector constructor stubs — used as type hints in Shader JS function params.
 // In the JS function body these are real values; the transpiler maps them to WGSL vec types.
-window.vec2 = (x = 0, y = 0)             => ({ x, y, _wgsl: 'vec2f' });
-window.vec3 = (x = 0, y = 0, z = 0)      => ({ x, y, z, _wgsl: 'vec3f' });
-window.vec4 = (x = 0, y = 0, z = 0, w=1) => ({ x, y, z, w, _wgsl: 'vec4f' });
-window.Camera   = Camera;
-window.AudioViz = AudioViz;
-window.Media    = Media;
-window.pat   = (str, inst, opts) => audio.pat(str, inst, opts);
-window.stack = (...pats) => audio.stack(...pats);
+_registerBuiltin('vec2', (x = 0, y = 0)             => ({ x, y, _wgsl: 'vec2f' }));
+_registerBuiltin('vec3', (x = 0, y = 0, z = 0)      => ({ x, y, z, _wgsl: 'vec3f' }));
+_registerBuiltin('vec4', (x = 0, y = 0, z = 0, w=1) => ({ x, y, z, w, _wgsl: 'vec4f' }));
+_registerBuiltin('Camera',   Camera);
+_registerBuiltin('AudioViz',          AudioViz);
+_registerBuiltin('SpectrogramCanvas', SpectrogramCanvas);
+_registerBuiltin('PianoRollViz',      PianoRollViz);
+_registerBuiltin('EQWidget',          EQWidget);
+_registerBuiltin('Media',    Media);
+_registerBuiltin('pat',   (str, inst, opts) => audio.pat(str, inst, opts));
+_registerBuiltin('stack', (...pats) => audio.stack(...pats));
 
 class Color {
   static random() {
@@ -70,14 +81,21 @@ class Color {
     return `rgb(${255 - r}, ${255 - g}, ${255 - b})`;
   }
 }
-window.Color = Color;
-window.onKey = (key, fn) => document.addEventListener("keydown", (e) => {
+_registerBuiltin('Color', Color);
+_registerBuiltin('onKey', (key, fn) => document.addEventListener("keydown", (e) => {
   const el = document.activeElement;
   if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.isContentEditable)) return;
   if (window.__ar_paused) return;
   if (key === "any" || e.key === key) fn(e);
-});
-window.randUni = (lo, hi) => Math.random() * (hi - lo) + lo;
+}));
+_registerBuiltin('randUni', (lo, hi) => Math.random() * (hi - lo) + lo);
+// Expose registerAPI to user code so plugins and snippets can extend the platform.
+_registerBuiltin('registerAPI', registerAPI);
+_registerBuiltin('editImage',  editImage);
+
+// Wire up extensibility appliers so registerAPI(name, impl, { blocks, toolkit }) works.
+_setBlocksApplier(applyExternalBlocks);
+_setToolkitApplier(addToolkitEntries);
 
 // ── Global addEventListener patch — routes listeners to active editor ──────────
 EventTarget.prototype.addEventListener = function(type, handler, options) {
@@ -98,19 +116,23 @@ window.onload = () => {
 
   // ── DOM captures ──────────────────────────────────────────────────────────
   initDOMCaptures(_nativeSetInterval, _nativeClearInterval);
-  window.captureWindow = (target, fps) => _captureWindow(target, fps);
+  _registerBuiltin('captureWindow', (target, fps) => _captureWindow(target, fps));
 
   // ── Window manager ─────────────────────────────────────────────────────────
-  window.wm = initWM(() => {
+  const _wm = initWM(() => {
     window.__ar_instances?.forEach(inst => {
-      inst.cm.refresh();
+      inst.cm.requestMeasure();
       inst.inlineWidgets.refresh();
     });
   });
+  _registerBuiltin('wm', _wm);
   initDesktop(window.wm);
 
   // PIXI.js — init once at startup (synchronous in v7). Sets window.pixi + window.Stage.
   initPixi();
+  // Register pixi/Stage through the registry after initPixi() assigns them to window.
+  if (window.pixi)  _registerBuiltin('pixi',  window.pixi);
+  if (window.Stage) _registerBuiltin('Stage', window.Stage);
 
   const _stage = document.getElementById('wm-stage');
 
@@ -128,34 +150,89 @@ window.onload = () => {
   };
   const hideTooltip = () => { toolTipEl.style.display = 'none'; };
 
+  function _makeToolkitBtn(cmd, catName) {
+    const btn = document.createElement('div');
+    btn.className = 'toolkit-btn';
+    btn.draggable = true;
+    btn.dataset.search = `${cmd.label} ${cmd.hint ?? ''} ${(cmd.tags ?? []).join(' ')}`.toLowerCase();
+    btn.dataset.cat = catName.toLowerCase();
+    btn.innerHTML = `<span>${cmd.label}</span><span class="toolkit-info" title="">ℹ</span>`;
+    btn.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('application/x-ar-toolkit', cmd.code);
+      if (cmd.blockType) e.dataTransfer.setData('application/x-ar-block-type', cmd.blockType);
+      e.dataTransfer.effectAllowed = 'copy';
+      btn.classList.add('dragging');
+      hideTooltip();
+    });
+    btn.addEventListener('dragend', () => btn.classList.remove('dragging'));
+    if (cmd.hint) {
+      const infoSpan = btn.querySelector('.toolkit-info');
+      infoSpan.addEventListener('mouseenter', () => showTooltip(cmd.hint, infoSpan));
+      infoSpan.addEventListener('mouseleave', hideTooltip);
+      infoSpan.addEventListener('mousedown', (e) => e.stopPropagation());
+    }
+    return btn;
+  }
+
   function _populateTextPanel(panel) {
     for (const cat of TOOLKIT_CATEGORIES) {
       const catEl = document.createElement('div');
       catEl.className = 'toolkit-category';
+      catEl.dataset.catName = cat.name.toLowerCase();
       catEl.textContent = cat.name;
       panel.appendChild(catEl);
       for (const cmd of cat.commands) {
-        const btn = document.createElement('div');
-        btn.className = 'toolkit-btn';
-        btn.draggable = true;
-        btn.innerHTML = `<span>${cmd.label}</span><span class="toolkit-info" title="">ℹ</span>`;
-        btn.addEventListener('dragstart', (e) => {
-          e.dataTransfer.setData('application/x-ar-toolkit', cmd.code);
-          if (cmd.blockType) e.dataTransfer.setData('application/x-ar-block-type', cmd.blockType);
-          e.dataTransfer.effectAllowed = 'copy';
-          btn.classList.add('dragging');
-          hideTooltip();
-        });
-        btn.addEventListener('dragend', () => btn.classList.remove('dragging'));
-        if (cmd.hint) {
-          const infoSpan = btn.querySelector('.toolkit-info');
-          infoSpan.addEventListener('mouseenter', () => showTooltip(cmd.hint, infoSpan));
-          infoSpan.addEventListener('mouseleave', hideTooltip);
-          infoSpan.addEventListener('mousedown', (e) => e.stopPropagation());
-        }
-        panel.appendChild(btn);
+        panel.appendChild(_makeToolkitBtn(cmd, cat.name));
       }
     }
+  }
+
+  // Live toolkit entry insertion — called by pipe.register() and any runtime registerAPI() use.
+  // Updates all currently-open toolkit text panels without requiring a re-open.
+  window.__ar_addToolkitEntry = (catName, cmd) => {
+    addToolkitEntries(catName, [cmd]);
+    document.querySelectorAll('.ar-toolkit-text').forEach(panel => {
+      let header = panel.querySelector(`.toolkit-category[data-cat-name="${catName.toLowerCase()}"]`);
+      if (!header) {
+        header = document.createElement('div');
+        header.className = 'toolkit-category';
+        header.dataset.catName = catName.toLowerCase();
+        header.textContent = catName;
+        panel.appendChild(header);
+      }
+      panel.appendChild(_makeToolkitBtn(cmd, catName));
+    });
+  };
+
+  // Boot user library — loads localStorage entries into memory, injects into toolkit + palette
+  initLibrary();
+  _registerBuiltin('library', library);
+  // wire block applier before populating so stored blocks register immediately
+  window.__ar_applyLibraryBlock = (definition, generator) => {
+    applyExternalBlocks(definition.type, [{ definition, generator }]);
+    addBlockToCategoryMeta('My Library', definition.type);
+  };
+  populateLibraryToolkit();
+  populateLibraryBlocks();
+
+  function _filterTextPanel(panel, q) {
+    const query = q.trim().toLowerCase();
+    const cats = panel.querySelectorAll('.toolkit-category');
+    const btns = panel.querySelectorAll('.toolkit-btn');
+    if (!query) {
+      cats.forEach(c => { c.style.display = ''; });
+      btns.forEach(b => { b.style.display = ''; });
+      return;
+    }
+    cats.forEach(c => { c.style.display = 'none'; });
+    btns.forEach(b => {
+      const match = b.dataset.search?.includes(query);
+      b.style.display = match ? '' : 'none';
+      if (match) {
+        const catEl = panel.querySelector(`.toolkit-category[data-cat-name="${b.dataset.cat}"]`);
+        if (catEl) catEl.style.display = '';
+      }
+    });
   }
 
   function _buildToolkitContent(win) {
@@ -178,8 +255,15 @@ window.onload = () => {
     blocksModeBtn.title = 'Block palette';
     blocksModeBtn.innerHTML = '<i class="fa-solid fa-puzzle-piece"></i>';
 
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.placeholder = 'Filter…';
+    searchInput.className = 'ar-toolkit-search';
+    searchInput.addEventListener('mousedown', e => e.stopPropagation());
+
     modeBar.appendChild(textModeBtn);
     modeBar.appendChild(blocksModeBtn);
+    modeBar.appendChild(searchInput);
     body.appendChild(modeBar);
 
     const textPanel = document.createElement('div');
@@ -270,8 +354,11 @@ window.onload = () => {
       resizeBlockly(paletteWorkspace);
     }
 
-    textModeBtn.addEventListener('click', () => { if (inBlocksMode) openText(); });
-    blocksModeBtn.addEventListener('click', () => { if (!inBlocksMode) openBlocks(); });
+    searchInput.addEventListener('input', () => {
+      if (!inBlocksMode) _filterTextPanel(textPanel, searchInput.value);
+    });
+    textModeBtn.addEventListener('click', () => { if (inBlocksMode) { openText(); searchInput.style.display = ''; } });
+    blocksModeBtn.addEventListener('click', () => { if (!inBlocksMode) { openBlocks(); searchInput.style.display = 'none'; } });
 
     new ResizeObserver(() => {
       if (inBlocksMode && paletteWorkspace) resizeBlockly(paletteWorkspace);
@@ -448,11 +535,15 @@ window.onload = () => {
     });
   });
 
+  // Track system-spawned viz window IDs so they can be closed when the source is toggled off.
+  let _sysMicVizId = null;
+  let _sysCamWinId = null;
+
   const _spawnMicViz = () => {
     const desk = document.getElementById('desktop');
     const dw = desk.offsetWidth, dh = desk.offsetHeight;
     const offset = (_vizCount++ % 8) * 24;
-    window.wm.spawn('Mic Visualizer', {
+    _sysMicVizId = window.wm.spawn('Mic Visualizer', {
       type: 'viz', source: 'mic', style: 'bars',
       w: 400, h: 180,
       x: Math.round((dw - 400) / 2) + offset,
@@ -464,7 +555,7 @@ window.onload = () => {
     const desk = document.getElementById('desktop');
     const dw = desk.offsetWidth, dh = desk.offsetHeight;
     const offset = (_vizCount++ % 8) * 24;
-    window.wm.spawn('Camera', {
+    _sysCamWinId = window.wm.spawn('Camera', {
       type: 'camera',
       w: 320, h: 240,
       x: Math.round((dw - 320) / 2) + offset,
@@ -472,21 +563,35 @@ window.onload = () => {
     });
   };
 
-  // Show/hide mic viz button with mic state; auto-spawn on first enable
+  // Show/hide mic viz button with mic state; auto-spawn on first enable.
+  // On toggle-off, close the system-spawned viz; warn if user-spawned viz windows remain.
   const micVizBtn = document.getElementById('newMicVizBtn');
   document.getElementById('micToggle')?.addEventListener('click', () => {
     const on = window.__ar_mic_on;
     if (micVizBtn) micVizBtn.style.display = on ? '' : 'none';
-    if (on) _spawnMicViz();
+    if (on) {
+      _spawnMicViz();
+    } else {
+      if (_sysMicVizId) { window.wm.close(_sysMicVizId); _sysMicVizId = null; }
+    }
   });
   document.getElementById('newMicVizBtn')?.addEventListener('click', _spawnMicViz);
 
-  // Show/hide camera viz button with camera state; auto-spawn on first enable
+  // Show/hide camera viz button with camera state; auto-spawn on first enable.
+  // On toggle-off, close the system-spawned camera window; warn if user-spawned cam windows remain.
   const camVizBtn = document.getElementById('newCamVizBtn');
   document.getElementById('cameraToggle')?.addEventListener('click', () => {
     const on = window.__ar_camera_on;
     if (camVizBtn) camVizBtn.style.display = on ? '' : 'none';
-    if (on) _spawnCamWin();
+    if (on) {
+      _spawnCamWin();
+    } else {
+      if (_sysCamWinId) { window.wm.close(_sysCamWinId); _sysCamWinId = null; }
+      // Warn about user-spawned camera windows that remain open
+      const remaining = [...document.querySelectorAll('.wm-win')]
+        .filter(w => w.style.display !== 'none' && w._wmSpawnOpts?.type === 'camera' && w.id !== _sysCamWinId);
+      if (remaining.length) console.warn('Camera turned off — user-spawned camera window(s) still open.');
+    }
   });
   document.getElementById('newCamVizBtn')?.addEventListener('click', _spawnCamWin);
 

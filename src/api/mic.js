@@ -68,7 +68,8 @@ export function initMic() {
     micOn ? startMic() : stopMic();
   });
 
-  if (navigator.mediaDevices?.getUserMedia) {
+  const tryAcquireMic = () => {
+    if (currentStream) return;
     navigator.mediaDevices
       .getUserMedia({ audio: true, video: false })
       .then((stream) => {
@@ -77,6 +78,15 @@ export function initMic() {
         stream.getAudioTracks().forEach((t) => (t.enabled = false));
         toggle.style.display = "inline-flex";
       })
-      .catch((err) => console.warn("Mic unavailable:", err.message));
+      .catch(() => {});
+  };
+
+  if (navigator.mediaDevices?.getUserMedia) {
+    tryAcquireMic();
+    navigator.permissions?.query({ name: "microphone" }).then((status) => {
+      status.addEventListener("change", () => {
+        if (status.state === "granted") tryAcquireMic();
+      });
+    }).catch(() => {});
   }
 }

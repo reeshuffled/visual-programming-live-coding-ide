@@ -10,12 +10,20 @@ export function cleanupCameras() {
 class CameraStream {
   constructor(stream) {
     this._stream = stream;
+    this._flipped = false;
     this.element = document.createElement('video');
     this.element.autoplay = true;
     this.element.playsInline = true;
     this.element.muted = true;
     this.element.srcObject = stream;
     _openCameras.push(this);
+  }
+
+  /** Mirror the video feed horizontally */
+  flip(state = true) {
+    this._flipped = state;
+    this.element.style.transform = state ? 'scaleX(-1)' : '';
+    return this;
   }
 
   stop() { this._release(); }
@@ -78,7 +86,8 @@ export function initCamera() {
   const drawFrame = () => {
     rafId = requestAnimationFrame(drawFrame);
     if (video.readyState >= video.HAVE_CURRENT_DATA) {
-      cameraCtx.drawImage(video, 0, 0, cameraCanvas.width, cameraCanvas.height);
+      const w = cameraCanvas.width, h = cameraCanvas.height;
+      cameraCtx.drawImage(video, 0, 0, w, h);
     }
   };
 
@@ -133,11 +142,18 @@ export function initCamera() {
     }
   });
 
+
+
   document.getElementById("cameraSelect").addEventListener("change", function () {
     startCamera(this.value);
   });
 
   if (navigator.mediaDevices?.getUserMedia) {
     startCamera(null);
+    navigator.permissions?.query({ name: "camera" }).then((status) => {
+      status.addEventListener("change", () => {
+        if (status.state === "granted") startCamera(null);
+      });
+    }).catch(() => {});
   }
 }

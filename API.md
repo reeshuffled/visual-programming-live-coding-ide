@@ -24,6 +24,8 @@ draw.push() / draw.pop()                   // save/restore transform+alpha+blend
 draw.translate(x, y) / draw.rotate(rad) / draw.scale(x, y?)
 draw.resetTransform()
 draw.alpha(0–1) / draw.blend(mode)         // modes: 'screen' 'multiply' 'lighter' etc.
+draw.pixelate(source, blockSize, x?, y?, w?, h?)   // blocky pixelation of any canvas/video
+draw.toASCII(canvas, {cols, rows, charset, bg, color}) → { el: <pre>, update(canvas) }
 draw.at(z)                                 // switch to layer z (returns same API)
 draw.width  // 1600
 draw.height // 900
@@ -35,11 +37,27 @@ draw.height // 900
 getCanvas(z?)                         // HTMLCanvasElement at logical z (default 0)
 getLayer(z?)                          // Layer object
   .blur(px) .hue(deg) .brightness(n) .saturate(n) .invert(n) .opacity(n)
+  .blendMode(mode)                    // CSS mix-blend-mode: 'screen' 'multiply' 'overlay' etc.
   .rotate(deg) .rotateX(deg) .rotateY(deg) .scale(x, y?) .perspective(px)
   .clip('circle(50%)') .reset()
 ```
 
 Z-order: logical z → CSS z-index `20+z`. Media defaults to CSS 25, Shader to CSS 30.
+
+### Image editing
+
+```js
+editImage(source)            // source: canvas | HTMLImageElement | HTMLVideoElement
+  .crop(x, y, w, h)
+  .rotate(deg)               // canvas expands to fit
+  .filter(cssStr)            // 'blur(4px) hue-rotate(90deg)' etc.
+  .flipH() / .flipV()
+  .blend(other, mode)        // composite with another canvas/EditableImage
+  .reset()                   // discard all ops
+  .toCanvas()                // → HTMLCanvasElement (cached)
+  .draw(drawTarget, x, y, w?, h?)
+  .width / .height           // current output dimensions
+```
 
 ---
 
@@ -247,6 +265,194 @@ audio.say(text, opts?)                       // speechSynthesis
 
 ---
 
+## Render Pipeline — `pipe`
+
+Fluent visual pipeline. Each stage exposes a canvas the next stage samples — one shared raf loop, auto-cleanup on reset. No manual `captureWindow`, `wm.spawn`, or `setInterval` needed.
+
+```js
+// Source types pipe() accepts:
+//   CameraStream  (from Camera.open())
+//   HTMLCanvasElement  (getCanvas(z), etc.)
+//   HTMLVideoElement
+//   GLShader / Shader instance  (.canvas property)
+//   Layer  (._canvas property)
+
+const cam = await Camera.open();
+
+pipe(cam)
+  .ascii({ cols: 150, color: '#00ff41', bg: '#0d0208' })  // ASCII art stage
+  .glshader(`                                               // GLSL post-process
+    vec4 a = texture2D(uVideo, uv);
+    float l = dot(a.rgb, vec3(.299,.587,.114));
+    vec3 rain = .5+.5*cos(6.28*(uv.y+time*.4+vec3(0,.33,.67)));
+    gl_FragColor = vec4(rain*l, 1.);
+  `)
+  .show('ASCII Cam', { w: 700, h: 500 });  // spawns wm window
+```
+
+### Stage methods (chainable, return `this`)
+
+```js
+.ascii({ cols, rows, charset, bg, color, cellW, cellH })
+  // Render glyphs to canvas. Default charset: ' .:-=+*#%@'.
+  // Luma weights match draw.toASCII (0.299/0.587/0.114).
+
+.pixelate({ blockSize })
+  // Mosaic effect — downscale then upscale without smoothing.
+
+.fx(cssFilterString)
+  // CSS filter on upstream: 'blur(4px)', 'hue-rotate(90deg) saturate(2)', 'invert(1)', etc.
+
+.glshader(fragBody, { z, opacity })
+  // WebGL/GLSL stage. uVideo samples upstream canvas. Same syntax as new GLShader(body).
+
+.shader(fragBody, { z, opacity })
+  // WebGPU/WGSL stage. Same syntax as new Shader(body).
+
+.use(factory)
+  // Custom stage escape hatch. factory(srcDrawable) called once at start; returns
+  // { canvas: HTMLCanvasElement, read() }. read() called every raf tick.
+  // srcDrawable is the upstream HTMLCanvasElement or HTMLVideoElement.
+  // Use to write any arbitrary canvas transform without subclassing.
+  // Example:
+  //   .use(src => {
+  //     const canvas = document.createElement('canvas');
+  //     canvas.width = 800; canvas.height = 600;
+  //     const ctx = canvas.getContext('2d');
+  //     return { canvas, read() { ctx.drawImage(src, 0, 0); /* custom processing */ } };
+  //   })
+```
+
+### Registering named stages — `pipe.register(name, factory, descriptor)`
+
+Package a custom stage factory as a reusable named method. After registration:
+- `pipe(src).yourStageName(opts)` works in any pipeline
+- Appears in the text-toolkit sidebar (draggable snippet)
+- Generates a Blockly block from `descriptor.fields` (usable in blocks mode)
+
+```js
+pipe.register('glowAscii', (src, opts = {}) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 800; canvas.height = 600;
+  const ctx = canvas.getContext('2d');
+  // setup using opts.cols, opts.color, etc.
+  return {
+    canvas,
+    read() {
+      // called every frame — draw to canvas using src (canvas or video) as input
+      ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
+    },
+  };
+}, {
+  label:  'Glow ASCII',            // toolkit + block display name
+  hint:   'ASCII art with glow',   // tooltip in sidebar
+  colour: 80,                      // Blockly block hue (0–360)
+  fields: [
+    { name: 'cols',  label: 'cols',  type: 'number', default: 120 },
+    { name: 'color', label: 'color', type: 'color',  default: '#00ff41' },
+  ],
+  // code: '...'  // optional custom snippet; auto-generated from fields if omitted
+});
+
+// Use anywhere:
+pipe(cam).glowAscii({ cols: 120, color: '#00ff41' }).show('Glow', { w: 700, h: 500 });
+// Chains with built-ins:
+pipe(cam).ascii({ cols: 60 }).glowAscii({ cols: 60 }).fx('blur(2px)').show('out');
+```
+
+**field `type` values:** `'number'` (numeric, Blockly number field), `'color'` (colour picker), `'text'` (text input), `'boolean'` (checkbox).
+
+### Sink methods (start the loop)
+
+```js
+.show(title, { w, h, noChrome, transparent })
+  // Spawn a wm window and render the pipeline inside it.
+  // Closing the window auto-stops the pipeline.
+
+.layer(z)
+  // Render pipeline output onto canvas layer at z-index z.
+
+.to(el)
+  // Mount into any DOM element (selector string or HTMLElement).
+
+.start()
+  // Start headless — access output via .canvas.
+
+.stop()   // halt raf loop; cleanup happens automatically on reset
+.canvas   // the final output canvas (available after start())
+```
+
+---
+
+## User Library — `library`
+
+Persistent cross-project store for named shader bodies and code snippets. Survives project switches and page reloads. Stored in `localStorage['vl_library']` — separate from `.vljson` project files by design.
+
+```js
+// Save to library — available in every project from now on
+library.glsl('rainbow', `
+  vec4 a = texture2D(uVideo, uv);
+  float l = dot(a.rgb, vec3(.299,.587,.114));
+  vec3 c = .5+.5*cos(6.28*(uv.y+time*.4+vec3(0,.33,.67)));
+  gl_FragColor = vec4(c*l, 1.);
+`);
+
+library.wgsl('plasma', ({ uv, time }) => {
+  let c = vec2f(uv.x * 3.0, uv.y * 3.0 + time);
+  return vec4f(sin(c.x), sin(c.y), sin(c.x + c.y), 1.0);
+});
+
+library.snippet('camSetup', `
+const cam = await Camera.open();
+pipe(cam)
+  .ascii({ cols: 120, color: '#00ff41', bg: '#0d0208' })
+  .show('ASCII Cam', { w: 700, h: 500 });
+`);
+
+// Use by name — GLShader and Shader constructors auto-resolve
+new GLShader('rainbow').start();
+pipe(cam).glshader('rainbow').show('out');
+new Shader('plasma').start();
+
+// Static convenience aliases (equivalent to library.glsl / library.wgsl)
+GLShader.define('rainbow', glslBody);
+Shader.define('plasma', wgslBody);
+```
+
+### Methods
+
+```js
+library.glsl(name, body)       // save GLSL body; returns library (chainable)
+library.wgsl(name, body)       // save WGSL body or JS arrow fn
+library.snippet(name, code)    // save arbitrary code snippet
+library.list()                 // → [{type:'glsl'|'wgsl'|'snippet', name, preview}]
+library.remove(type, name)     // delete one entry
+library.clear()                // delete all user entries
+library.export()               // → JSON string (portable between devices)
+library.import(jsonOrObj)      // merge from JSON string or parsed object
+```
+
+After saving, entries appear as draggable buttons in the **My Library** toolkit category. Snippets produce the full code when dragged; shader entries produce a usage snippet by name.
+
+---
+
+## Camera — `Camera`
+
+Multi-camera streaming. Toolbar camera: enable via camera toggle button.
+
+```js
+const cam = await Camera.open({ index: 0 })  // or { deviceId }
+// cam.element → <video> with live stream
+cam.flip(true)   // mirror horizontally; cam.flip(false) to undo
+cam.stop()       // release stream
+
+const list = await Camera.list()  // → [{index, deviceId, label}, ...]
+```
+
+Toolbar mirror button (↔): shown when camera is on. Mirrors the main canvas drawImage. Tracks `window.__ar_camera_mirrored`.
+
+---
+
 ## Vision — `vision`
 
 MediaPipe. Camera must be enabled in toolbar. Results at ~10fps.
@@ -328,12 +534,23 @@ bat.onChange(fn)
 wm.show(id) / wm.hide(id) / wm.toggle(id) / wm.focus(id)
 wm.maximize(id) / wm.restore(id) / wm.close(id)
 wm.move(id, x, y) / wm.resize(id, w, h)
+wm.setZ(id, z)          // live CSS z-index update
+wm.setOpacity(id, v)    // live CSS opacity (0–1)
 wm.layout('split')
 wm.list()   // → all window ids
 
 wm.spawn(title, opts)   // → id
-// opts.type: 'html'|'image'|'video'|'camera'|'canvas'|'shader'
+// opts.type: 'html'|'image'|'video'|'camera'|'canvas'|'shader'|'viz'|'sensor'
 // opts: x,y,w,h,id + type-specific: html,src,loop,controls,z,shader
+// opts.noChrome: true → start without titlebar
+// opts.transparent: true → start in transparent mode
+// opts.z: number → initial CSS z-index
+// opts.onClose: fn → called when window is closed (e.g. stopRunning)
+// Video windows: default size 320×240; ⟳ sync button syncs currentTime with all other videos
+// Image/video windows: clipboard icon copies URL to clipboard
+// Sensor windows: opts.source = 'motion'|'gamepad'|'geo'|'battery' — live gauge/bar displays
+wm.spawn('Motion', { type: 'sensor', source: 'motion', w: 480, h: 200 })
+wm.spawn('Gamepad', { type: 'sensor', source: 'gamepad', w: 380, h: 200 })
 
 wm.pickFile(key, pickerOpts?)   // async → blob URL (cached by key, re-prompts once)
 ```
@@ -345,11 +562,20 @@ Built-in ids: `win-editor` `win-canvas` `win-console` `win-toolkit` `win-camera`
 ## Desktop — `desktop`
 
 ```js
-desktop.add(url, {name, type, x, y}?)   // → {id, name, type, url}
+desktop.add(url, opts?)   // → {id, name, type, url}
+// opts: name, type, x, y
+//   rotation: deg           — rotate icon
+//   tint: deg               — hue-rotate thumbnail
+//   scale: number           — scale icon
+//   animate: 'spin'|'bounce'|'pulse'|CSS — animate icon
+//   labelPosition: 'above'|'below'
+//   labelColor: color string
 desktop.remove(id) / desktop.clear()
 desktop.files()                          // → [{id, name, type, url, x, y}, ...]
 desktop.onFile(({id, name, type, url}) => {})   // fires on double-click
 desktop.open(id)
+// Drag icon over trash zone (shows at bottom center during drag) → releases/deletes icon
+// Green badge appears on icon when its spawned window is open
 ```
 
 ---

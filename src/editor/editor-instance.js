@@ -1,5 +1,18 @@
-import { addInfiniteLoopProtection, friendlyError } from './live-patch.js';
-import { initInlineWidgets } from './inline-widgets.js';
+import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, dropCursor } from '@codemirror/view';
+import { EditorState, StateEffect, StateField, RangeSetBuilder } from '@codemirror/state';
+import { Decoration } from '@codemirror/view';
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { javascript } from '@codemirror/lang-javascript';
+import { bracketMatching, foldGutter, codeFolding, foldKeymap, indentOnInput, foldCode, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete';
+import { highlightSelectionMatches } from '@codemirror/search';
+import { addInfiniteLoopProtection, friendlyError, extractScriptLine } from './live-patch.js';
+import { detectAPIUsage } from './api-detector.js';
+import { _beginRun, _endRun } from '../runtime/api-registry.js';
+import { initInlineWidgets, inlineWidgetsExtension } from './inline-widgets.js';
+import { searchMarksField, initSearch } from './cm-search.js';
+import { paramHintsExtension } from './param-hints.js';
+import { shaderSignalPickerExtension } from './shader-signal-picker.js';
 import { getDraw } from '../api/draw.js';
 import { Layer } from '../api/layer.js';
 import { startAudio, cleanupAudio } from '../api/audio.js';
@@ -13,6 +26,7 @@ import { cleanupSensors } from '../api/sensors.js';
 import { cleanupDesktop, addEditorIcon, removeEditorIcon, updateEditorIconLabel, duplicateEditor } from '../api/desktop-files.js';
 import { cleanupCameras } from '../api/camera.js';
 import { cleanupCaptures } from './editor-capture.js';
+import { cleanupPipelines } from '../api/render-pipeline.js';
 import { stopVision } from '../api/vision.js';
 import { freezeTimers, restoreTimers } from '../runtime/timer-manager.js';
 import {
@@ -20,7 +34,35 @@ import {
   loadWorkspaceJSON, registerSidebarDeleteZone,
 } from '../blocks/blocks.js';
 import { jsToBlocks } from '../blocks/js-to-blocks.js';
-import { initSearch } from './cm-search.js';
+
+// ── Error line decoration ─────────────────────────────────────────────────────
+
+const setErrorLineEffect = StateEffect.define();
+
+const errorLineField = StateField.define({
+  create: () => Decoration.none,
+  update(decos, tr) {
+    decos = decos.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setErrorLineEffect)) {
+        if (e.value === null) {
+          decos = Decoration.none;
+        } else {
+          const line = tr.state.doc.line(Math.max(1, Math.min(e.value, tr.state.doc.lines)));
+          const builder = new RangeSetBuilder();
+          builder.add(line.from, line.to, Decoration.mark({ class: 'ar-error-line' }));
+          decos = builder.finish();
+        }
+      }
+    }
+    return decos;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+// Number of lines the execute() preamble adds before user code (1-based offset).
+// Structure: `(async function(){\n` + 12 preamble lines + `\nawait ...\n` = 14.
+const PREAMBLE_LINES = 14;
 
 const STORAGE_PREFIX      = 'vl-ide-code-';
 const EXEC_STATE_PREFIX   = 'vl-ide-exec-';
@@ -52,6 +94,7 @@ export class EditorInstance {
     this._timeouts = new Map();
     this._listeners = [];
     this._keepAlive = new Set();
+    this._hadOutput = false;
     this._pausedState = null;
 
     this._layers = new Map();
@@ -68,11 +111,12 @@ export class EditorInstance {
     this._setupGlobals();
     this._buildWindows();
 
-    // Restore blocks mode pref
+    // Restore blocks mode pref — wait for FA font so icon widths are correct
+    const _faReady = document.fonts.load('900 13px "Font Awesome 6 Free"').catch(() => {});
     if (localStorage.getItem(`vl-blocks-open-${id}`) === '1') {
-      requestAnimationFrame(() => this._openBlocks());
+      _faReady.then(() => requestAnimationFrame(() => this._openBlocks()));
     } else {
-      requestAnimationFrame(() => this._positionThumb(false));
+      _faReady.then(() => requestAnimationFrame(() => this._positionThumb(false)));
     }
   }
 
@@ -164,7 +208,7 @@ export class EditorInstance {
     consoleHideBtn.addEventListener('click', () => {
       this.consolePanel.style.display = 'none';
       this.consoleToggleBtn.classList.remove('ar-btn-active');
-      this.cm.refresh();
+      this.cm.requestMeasure();
       this.inlineWidgets.refresh();
     });
 
@@ -226,48 +270,77 @@ export class EditorInstance {
     }
     const initialCode = localStorage.getItem(storageKey) ?? this._defaultCode;
 
-    this.cm = CodeMirror(editorDiv, {
-      mode: 'javascript',
-      lineNumbers: true,
-      lineWrapping: true,
-      value: initialCode,
-      extraKeys: { 'Ctrl-Space': 'autocomplete', 'Ctrl-Q': (cm) => cm.foldCode(cm.getCursor()) },
-      foldGutter: true,
-      gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
-      hintOptions: { completeSingle: false },
-      matchBrackets: true,
-      autoCloseBrackets: true,
-      styleActiveLine: true,
+    let saveTimer;
+    let _openSearch = null;
+
+    this.cm = new EditorView({
+      state: EditorState.create({
+        doc: initialCode,
+        extensions: [
+          history({ minDepth: 50, newGroupDelay: 500 }),
+          javascript(),
+          syntaxHighlighting(defaultHighlightStyle),
+          lineNumbers(),
+          highlightActiveLine(),
+          bracketMatching(),
+          closeBrackets(),
+          foldGutter(),
+          codeFolding(),
+          drawSelection(),
+          dropCursor(),
+          indentOnInput(),
+          autocompletion({ defaultKeymap: false }),
+          highlightSelectionMatches(),
+          searchMarksField,
+          errorLineField,
+          inlineWidgetsExtension(),
+          paramHintsExtension(),
+          shaderSignalPickerExtension(),
+          EditorView.lineWrapping,
+          EditorView.updateListener.of((update) => {
+            if (!update.docChanged) return;
+            clearTimeout(saveTimer);
+            saveTimer = this._native.setTimeout(
+              () => localStorage.setItem(storageKey, this.cm.state.doc.toString()), 500
+            );
+          }),
+          keymap.of([
+            ...defaultKeymap,
+            ...historyKeymap,
+            ...closeBracketsKeymap,
+            ...completionKeymap,
+            ...foldKeymap,
+            indentWithTab,
+            { key: 'Ctrl-q', run: foldCode },
+            { key: 'Mod-f', run: () => { _openSearch?.(); return true; }, preventDefault: true },
+          ]),
+        ],
+      }),
+      parent: editorDiv,
     });
 
     this.inlineWidgets = initInlineWidgets(this.cm);
     this.search = initSearch(this.cm, this.editorWrap);
-
-    let saveTimer;
-    this.cm.on('change', () => {
-      clearTimeout(saveTimer);
-      saveTimer = this._native.setTimeout(
-        () => localStorage.setItem(storageKey, this.cm.getValue()), 500
-      );
-    });
-    this.cm.setOption('lint', true);
+    _openSearch = this.search.open;
 
     // Drag-drop from toolkit into CM (text mode)
-    const cmWrapper = this.cm.getWrapperElement();
-    cmWrapper.addEventListener('dragover', (e) => {
+    this.cm.dom.addEventListener('dragover', (e) => {
       if (e.dataTransfer.types.includes('application/x-ar-toolkit')) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
       }
     });
-    cmWrapper.addEventListener('drop', (e) => {
+    this.cm.dom.addEventListener('drop', (e) => {
       const code = e.dataTransfer.getData('application/x-ar-toolkit');
       if (!code) return;
       e.preventDefault(); e.stopPropagation();
-      const pos = this.cm.coordsChar({ left: e.clientX, top: e.clientY });
+      const offset = this.cm.posAtCoords({ x: e.clientX, y: e.clientY }) ?? this.cm.state.doc.length;
+      const insertText = code + '\n';
       this.cm.focus();
-      this.cm.replaceRange(code + '\n', pos);
-      this.cm.setCursor({ line: pos.line + code.split('\n').length, ch: 0 });
+      this.cm.dispatch({
+        changes: { from: offset, to: offset, insert: insertText },
+        selection: { anchor: offset + insertText.length },
+      });
     });
 
     // Drag-drop from toolkit into blocks area
@@ -358,7 +431,7 @@ export class EditorInstance {
       const open = this.consolePanel.style.display === 'flex';
       this.consolePanel.style.display = open ? 'none' : 'flex';
       this.consoleToggleBtn.classList.toggle('ar-btn-active', !open);
-      this.cm.refresh();
+      this.cm.requestMeasure();
       this.inlineWidgets.refresh();
     });
 
@@ -443,7 +516,7 @@ export class EditorInstance {
     editorWin._wmIsEditor = true;
 
     new ResizeObserver(() => {
-      this.cm.refresh();
+      this.cm.requestMeasure();
       this.inlineWidgets.refresh();
       if (this.blocklyWorkspace && this.blocksArea.style.display !== 'none')
         resizeBlockly(this.blocklyWorkspace);
@@ -457,12 +530,15 @@ export class EditorInstance {
       id: this.canvasWinId, type: 'html', html: '', w: 640, h: 400,
     });
     const canvasWin = document.getElementById(this.canvasWinId);
+    // Start hidden so _showOutputWin() always runs its positioning logic
+    canvasWin.style.display = 'none';
     canvasWin.classList.add('wm-draggable-body');
     const canvasBody = canvasWin.querySelector('.wm-body');
     canvasBody.style.flexDirection = 'column';
     canvasBody.appendChild(this.fsContainer);
     canvasWin._wmSpawnOpts = { title: `Output mirror`, type: 'canvas', z: 0 };
     canvasWin._wmCleanup = () => {
+      this._keepAlive.delete(canvasWin);
       if (this.btnState === 'running' || this.btnState === 'paused') {
         this.reset();
         this._setIdle();
@@ -497,6 +573,7 @@ export class EditorInstance {
     window[`${ns}_draw`] = this.draw;
     window[`${ns}_getCanvas`] = (z = 0) => this._getLayerCanvas(z);
     window[`${ns}_getLayer`] = (z) => this._getLayerObj(z);
+    window[`${ns}_getDraw`]   = (z = 0) => this._getDraw(z);
 
     const self = this;
     window[`${ns}_setInterval`] = (cb, delay, ...args) => {
@@ -558,7 +635,7 @@ export class EditorInstance {
     if (!isPopped && this.consolePanel.style.display !== 'flex') {
       this.consolePanel.style.display = 'flex';
       this.consoleToggleBtn.classList.add('ar-btn-active');
-      this.cm.refresh();
+      this.cm.requestMeasure();
       this.inlineWidgets.refresh();
     }
   }
@@ -567,7 +644,7 @@ export class EditorInstance {
     this.consoleEl.innerHTML = '';
     this.consolePanel.style.display = 'none';
     this.consoleToggleBtn.classList.remove('ar-btn-active');
-    this.cm.refresh();
+    this.cm.requestMeasure();
     this.inlineWidgets.refresh();
   }
 
@@ -593,7 +670,7 @@ export class EditorInstance {
       floatWin.remove();
     };
 
-    this.cm.refresh();
+    this.cm.requestMeasure();
     this.inlineWidgets.refresh();
   }
 
@@ -636,7 +713,7 @@ export class EditorInstance {
 
     if (workspaceIsEmpty(this.blocklyWorkspace)) {
       try {
-        const json = jsToBlocks(this.cm.getValue());
+        const json = jsToBlocks(this.cm.state.doc.toString());
         if (json) loadWorkspaceJSON(this.blocklyWorkspace, json);
       } catch (e) { console.error('[blocks] js→blocks conversion failed:', e); }
     }
@@ -651,8 +728,10 @@ export class EditorInstance {
   _closeBlocks() {
     if (this.blocklyWorkspace) {
       const code = workspaceIsEmpty(this.blocklyWorkspace) ? '' : getWorkspaceCode(this.blocklyWorkspace);
-      this.cm.setValue(code);
-      this.cm.setCursor(0);
+      this.cm.dispatch({
+        changes: { from: 0, to: this.cm.state.doc.length, insert: code },
+        selection: { anchor: 0 },
+      });
     }
     if (this._blocksMuteCtrl) this._blocksMuteCtrl.style.display = 'none';
     this.blocksMode = false;
@@ -663,7 +742,7 @@ export class EditorInstance {
     this._textBtn.classList.add('ar-toggle-active');
     this._blocksBtn.classList.remove('ar-toggle-active');
     this._positionThumb(false);
-    this.cm.refresh();
+    this.cm.requestMeasure();
     this.inlineWidgets.refresh();
   }
 
@@ -706,6 +785,21 @@ export class EditorInstance {
     this._updateTaskbarChip();
   }
 
+  _onError(e) {
+    this._setStopped();
+    const scriptLine = extractScriptLine(e);
+    if (scriptLine !== null) {
+      const userLine = scriptLine - PREAMBLE_LINES;
+      if (userLine >= 1 && userLine <= this.cm.state.doc.lines) {
+        this.cm.dispatch({
+          effects: setErrorLineEffect.of(userLine),
+          selection: { anchor: this.cm.state.doc.line(userLine).from },
+        });
+        this.cm.dispatch({ effects: EditorView.scrollIntoView(this.cm.state.doc.line(userLine).from, { y: 'center' }) });
+      }
+    }
+  }
+
   _setStopped() {
     if (this.idleWatcher) { this._native.clearInterval(this.idleWatcher); this.idleWatcher = null; }
     this._wm.close(this.canvasWinId);
@@ -716,7 +810,7 @@ export class EditorInstance {
     }
     this._setIdle();
     if (!isPopped) {
-      this.cm.refresh();
+      this.cm.requestMeasure();
       this.inlineWidgets.refresh();
     }
   }
@@ -730,11 +824,23 @@ export class EditorInstance {
     dot.style.background = colors[this.btnState] ?? '#888';
   }
 
+  _isLive() {
+    if (this._keepAlive.size > 0) {
+      this._hadOutput = true;
+      return true;
+    }
+    if (this._hadOutput) return false;
+    return this._intervals.size > 0 || this._listeners.length > 0;
+  }
+
+  _checkLiveOrStop() {
+    if (this.btnState === 'running' && !this._isLive()) this._setStopped();
+  }
+
   _startIdleWatcher() {
     this.idleWatcher = this._native.setInterval(() => {
       if (this.btnState !== 'running') { this._native.clearInterval(this.idleWatcher); this.idleWatcher = null; return; }
-      if (this._intervals.size === 0 && this._listeners.length === 0 && (window.__ar_keepAlive?.size ?? 0) === 0)
-        this._setStopped();
+      if (!this._isLive()) this._setStopped();
     }, 300);
   }
 
@@ -770,6 +876,8 @@ export class EditorInstance {
   }
 
   reset() {
+    _endRun(); // restore any registerAPI() overrides made during this run
+    this.cm.dispatch({ effects: setErrorLineEffect.of(null) });
     window.__ar_paused = false;
     this._pausedState = null;
     this._listeners.forEach(({ target, type, handler, options }) =>
@@ -783,6 +891,7 @@ export class EditorInstance {
     cleanupAudio();
     cleanupShaders();
     cleanupGLShaders();
+    cleanupPipelines();
     cleanupPixi();
     cleanupViz();
     cleanupMedia();
@@ -791,8 +900,9 @@ export class EditorInstance {
     cleanupDesktop();
     cleanupCameras();
     cleanupCaptures();
-    window.__ar_keepAlive = new Set();
     this._keepAlive = new Set();
+    this._hadOutput = false;
+    window.__ar_keepAlive = this._keepAlive;
     if (this.currentScript) { document.body.removeChild(this.currentScript); this.currentScript = null; }
     this._layerObjects.forEach(layer => layer.reset());
     this._layerObjects.clear();
@@ -823,11 +933,13 @@ export class EditorInstance {
     outputWin.style.width  = `${dw - editorLeft - editorNewW}px`;
     outputWin.style.height = `${dh}px`;
     outputWin.style.display = 'flex';
+    this._keepAlive.add(outputWin);
+    this._hadOutput = true;
   }
 
   execute() {
     const blocksActive = this.blocksMode && this.blocklyWorkspace && !workspaceIsEmpty(this.blocklyWorkspace);
-    const raw = blocksActive ? getWorkspaceCode(this.blocklyWorkspace) : this.cm.getValue();
+    const raw = blocksActive ? getWorkspaceCode(this.blocklyWorkspace) : this.cm.state.doc.toString();
 
     if (/\bvision\b|__ar_video|ShaderFX\.camera/.test(raw) && !window.__ar_camera_on) {
       this._appendConsole('<span class="ar-console-err">Cannot run: camera is off. Turn on your camera first.</span>');
@@ -839,10 +951,21 @@ export class EditorInstance {
     }
 
     this.reset();
-    this._showOutputWin();
-    window.__ar_audioReady = startAudio();
-    window.__ar_keepAlive = new Set();
-    this._keepAlive = window.__ar_keepAlive;
+    _beginRun(); // snapshot API registry so run-scoped registerAPI() calls are reverted on reset
+
+    // Smart output detection: analyse user code before executing so we only open
+    // the output window and start audio when they're actually needed.
+    const _apiHints = detectAPIUsage(raw);
+    const _needsCanvas = _apiHints.usesDraw || _apiHints.usesLayer || _apiHints.usesPixi ||
+      _apiHints.usesShaderFX ||
+      (_apiHints.usesShader && _apiHints.shaderStartCalled) ||
+      (_apiHints.usesGLShader && _apiHints.shaderStartCalled);
+    if (_needsCanvas) this._showOutputWin();
+
+    window.__ar_audioReady = _apiHints.usesAudio ? startAudio() : Promise.resolve();
+    this._keepAlive = new Set();
+    this._hadOutput = false;
+    window.__ar_keepAlive = this._keepAlive;
     this.consoleEl.innerHTML = '';
 
     // Tag listeners to this editor during synchronous setup
@@ -860,6 +983,7 @@ export class EditorInstance {
       `const draw        = window.${ns}_draw;`,
       `const getCanvas   = window.${ns}_getCanvas;`,
       `const getLayer    = window.${ns}_getLayer;`,
+      `const getDraw     = window.${ns}_getDraw;`,
       `const setInterval = window.${ns}_setInterval;`,
       `const clearInterval = window.${ns}_clearInterval;`,
       `const setTimeout  = window.${ns}_setTimeout;`,
@@ -873,8 +997,8 @@ export class EditorInstance {
 
     const code =
       `(async function(){\n${preamble}\nawait window.__ar_audioReady;\n${protected_code}\n})()` +
-      `.catch(e => { const msg = window.__ar_friendlyError(e); window.${ns}_console.error('Error: ' + msg); window.__ar_instances?.get(${this.id})?._setStopped(); })` +
-      `.then(() => { if(window.__ar_instances?.get(${this.id})?.btnState !== 'running') return; const inst = window.__ar_instances?.get(${this.id}); if(inst && inst._intervals.size===0 && inst._listeners.length===0 && (window.__ar_keepAlive?.size??0)===0) inst._setStopped(); });`;
+      `.catch(e => { const msg = window.__ar_friendlyError(e); window.${ns}_console.error('Error: ' + msg); window.__ar_instances?.get(${this.id})?._onError(e); })` +
+      `.then(() => { window.__ar_instances?.get(${this.id})?._checkLiveOrStop(); });`;
 
     window.__ar_friendlyError = friendlyError;
 

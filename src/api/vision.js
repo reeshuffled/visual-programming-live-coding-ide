@@ -253,9 +253,11 @@ export const vision = {
   onGesture(gesture, fn) {
     _ensureStarted();
     _gestureHandlers.push({ gesture, fn, prev: false });
+    return this;
   },
   onExpression(expr, fn) {
     _ensureStarted();
     _expressionHandlers.push({ expr, fn, prev: false });
+    return this;
   },
 };

@@ -2,6 +2,8 @@
 
 Two drawing APIs: `draw` (fluent, opinionated) and raw `getCanvas()` (full 2D context access). Layer system for z-ordering and CSS effects.
 
+For chained visual effects across sources (camera → ASCII → shader), see the [Render Pipeline](#render-pipeline--pipe) section at the bottom of this doc.
+
 ---
 
 ## draw — Fluent Drawing API
@@ -167,7 +169,89 @@ layer.reset()
 
 All Layer methods return `this` — chainable:
 ```js
-getLayer(0).blur(2).brightness(1.3).hue(45);
+getLayer(0).blur(2).brightness(1.3).hue(45).blendMode('screen');
+```
+
+### Blend Modes
+
+`blendMode(mode)` sets CSS `mix-blend-mode` on the layer canvas — composites it with layers below using the browser's GPU blending. Cleared by `reset()`.
+
+```js
+// Two-layer multiply: draw on layer 0, shader on layer 1 blended through
+getLayer(1).blendMode('multiply');
+
+// Screen blend: lighten-only compositing, good for glow/fire effects
+getLayer(1).blendMode('screen');
+```
+
+Available modes (any valid CSS `mix-blend-mode`): `multiply` `screen` `overlay` `difference` `lighten` `darken` `hard-light` `soft-light` `exclusion` `color-burn` (and all others the browser supports).
+
+---
+
+## Pixel FX
+
+### draw.pixelate
+
+`draw.pixelate(source, blockSize, x?, y?, w?, h?)` — downsamples `source` to `blockSize`-pixel blocks and draws it back at full size. Useful for pixel-art effects, retro looks, or privacy masking.
+
+```js
+// Pixelate layer 0 onto itself
+draw.pixelate(getCanvas(0), 12);
+
+// Pixelate live camera feed at 16px blocks
+const cam = new Camera();
+setInterval(() => draw.pixelate(cam.element, 16), 33);
+
+// Pixelate into a sub-region
+draw.pixelate(getCanvas(1), 8, 200, 100, 400, 300);
+```
+
+### draw.toASCII
+
+`draw.toASCII(canvas, opts)` → `{ el: <pre>, update(canvas) }` — converts pixel brightness to ASCII characters. Returns a `<pre>` element with a live `update()` method.
+
+Options: `{ cols: 80, rows, charset: ' .:-=+*#%@', bg: '#000', color: '#0f0' }`
+
+```js
+const art = draw.toASCII(getCanvas(0), { cols: 80, charset: ' .,:;+*#%@' });
+const id = wm.spawn('ASCII', { type: 'html', html: '', w: 600, h: 400 });
+document.getElementById(id)?.querySelector('.wm-body').appendChild(art.el);
+
+setInterval(() => {
+  draw.circle(800, 450, 100 + Math.sin(Date.now()/500)*60, '#fff');
+  art.update(getCanvas(0));   // re-renders every frame
+}, 50);
+```
+
+---
+
+## editImage — Non-destructive Image Pipeline
+
+`editImage(source)` → `EditableImage` — wraps any canvas, image, or video in a non-destructive editing pipeline. Operations accumulate; `toCanvas()` applies them all and caches the result.
+
+```js
+const img = editImage(await Media.image('https://example.com/photo.jpg'));
+img.crop(100, 0, 800, 600)
+   .rotate(15)
+   .filter('hue-rotate(90deg) saturate(2)')
+   .flipH();
+
+draw.image(img.toCanvas(), 0, 0);
+```
+
+### Methods
+
+```js
+img.crop(x, y, w, h)        // cut a region
+img.rotate(deg)              // rotate (canvas expands to fit)
+img.filter(cssFilterStr)     // apply CSS filter (blur, sepia, hue-rotate, etc.)
+img.flipH()                  // horizontal mirror
+img.flipV()                  // vertical mirror
+img.blend(other, mode)       // composite with another canvas/EditableImage (default: 'screen')
+img.reset()                  // discard all ops, back to source
+img.toCanvas()               // → HTMLCanvasElement (cached; call after ops)
+img.draw(drawTarget, x, y, w?, h?)  // convenience: draws toCanvas() onto a DrawTarget
+img.width / img.height       // current output dimensions
 ```
 
 ---
@@ -254,4 +338,118 @@ setInterval(() => {
     fg.circle(x, y, 40, `hsl(${i * 72 + t * 30}, 90%, 65%)`);
   }
 }, 16);
+```
+
+---
+
+## Render Pipeline — `pipe`
+
+Chain visual stages from any source. One shared raf loop — no `captureWindow`, no `setInterval`, auto-cleanup on reset.
+
+### Sources
+
+`pipe()` accepts: `CameraStream`, `HTMLCanvasElement`, `HTMLVideoElement`, `GLShader`, `Shader`, or `Layer`.
+
+### Stages (chainable)
+
+| Stage | Call | What it does |
+|-------|------|--------------|
+| ASCII | `.ascii({ cols, rows, charset, bg, color, cellW, cellH })` | Renders luminance-mapped glyphs to a canvas. Same luma weights as `draw.toASCII`. |
+| Pixelate | `.pixelate({ blockSize })` | Mosaic effect — downscale/upscale without smoothing. Reuses `draw.pixelate` logic. |
+| CSS FX | `.fx(cssFilter)` | Any CSS filter string: `'blur(4px)'`, `'hue-rotate(90deg)'`, `'invert(1)'`, etc. |
+| GLShader | `.glshader(body, { z, opacity })` | WebGL/GLSL stage. `uVideo` samples upstream canvas. Works in all browsers. |
+| Shader | `.shader(body, { z, opacity })` | WebGPU/WGSL stage. Chrome 113+ / Safari 18+. |
+| Custom | `.use(factory)` | Escape hatch. `factory(srcDrawable)` called once at start, returns `{ canvas, read() }`. `read()` called every frame. |
+
+Stages can be chained arbitrarily. Shader stages self-raf; canvas stages are driven by the shared loop. Shader stages work as terminal **or** intermediate (downstream samples the shader canvas).
+
+### Sinks
+
+```js
+.show(title, { w, h, noChrome, transparent })  // spawn a wm window
+.layer(z)                                       // render onto canvas layer at z-index z
+.to(el)                                         // mount into any DOM element
+.start()                                        // headless — access output via .canvas
+```
+
+`.show()` auto-stops the pipeline when the window is closed.
+
+### Examples
+
+```js
+// Camera → ASCII → show
+const cam = await Camera.open();
+pipe(cam)
+  .ascii({ cols: 120, color: '#00ff41', bg: '#0d0208' })
+  .show('ASCII Cam', { w: 700, h: 500 });
+
+// Camera → ASCII → GLShader → show
+pipe(cam)
+  .ascii({ cols: 150, color: '#00ff41', bg: '#0d0208' })
+  .glshader(`
+    vec4 a = texture2D(uVideo, uv);
+    float l = dot(a.rgb, vec3(.299,.587,.114));
+    vec3 rain = .5+.5*cos(6.28*(uv.y+time*.4+vec3(0,.33,.67)));
+    gl_FragColor = vec4(rain*l, 1.);
+  `)
+  .show('ASCII Cam', { w: 700, h: 500 });
+
+// Pixelate + CSS fx
+pipe(cam).pixelate({ blockSize: 20 }).fx('hue-rotate(120deg)').show('Retro', { w: 700, h: 500 });
+
+// Render to canvas layer (no window)
+pipe(cam).ascii({ cols: 80 }).layer(2);
+```
+
+### Custom stages — `pipe.register(name, factory, descriptor)`
+
+Package reusable processing logic as a named stage. Registered stages become chainable methods on every pipeline, appear in the text-toolkit sidebar as draggable snippets, and generate a Blockly block for blocks mode.
+
+```js
+// Register once (e.g., in a "setup" snippet you run before your sketch)
+pipe.register('glowAscii', (src, opts = {}) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 800; canvas.height = 600;
+  const ctx = canvas.getContext('2d');
+  // ... setup using opts.cols, opts.color, etc.
+  return {
+    canvas,
+    read() {
+      // called every frame — src is the upstream drawable (canvas or video)
+      ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
+      // apply glow, ascii mapping, etc.
+    },
+  };
+}, {
+  label:  'Glow ASCII',
+  hint:   'ASCII art with bloom glow',
+  colour: 80,                       // Blockly block hue
+  fields: [
+    { name: 'cols',  label: 'cols',  type: 'number', default: 120 },
+    { name: 'color', label: 'color', type: 'color',  default: '#00ff41' },
+  ],
+});
+
+// Then anywhere in your code:
+const cam = await Camera.open();
+pipe(cam).glowAscii({ cols: 120, color: '#00ff41' }).show('Glow Cam', { w: 700, h: 500 });
+```
+
+**descriptor fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `label` | string | Display name in toolkit and block (default: `name`) |
+| `hint` | string | Tooltip shown in toolkit sidebar |
+| `colour` | number | Blockly block hue (0–360, default: 80) |
+| `fields` | array | Auto-generates block inputs. Each: `{ name, label?, type, default }` |
+| `code` | string | Custom toolkit snippet (auto-generated from `fields` if omitted) |
+
+**field types:** `'number'` → numeric scrubber, `'color'` → colour picker, `'text'` → text input, `'boolean'` → checkbox.
+
+**Factory contract:** `factory(src, opts)` — `src` is the upstream drawable (HTMLCanvasElement or HTMLVideoElement). Return `{ canvas: HTMLCanvasElement, read() }`. `read()` is called every raf tick to pull upstream and write to `canvas`.
+
+Stages chain with all built-ins:
+```js
+pipe(cam).ascii({ cols: 60 }).glowAscii({ cols: 60 }).fx('blur(2px)').show('output', { w: 700, h: 500 });
 ```

@@ -1,4 +1,4 @@
-import { friendlyError, addInfiniteLoopProtection } from '../src/editor/live-patch.js';
+import { friendlyError, addInfiniteLoopProtection, extractScriptLine } from '../src/editor/live-patch.js';
 
 // ── friendlyError ────────────────────────────────────────────────────────────
 
@@ -90,5 +90,38 @@ describe('addInfiniteLoopProtection', () => {
     const result = addInfiniteLoopProtection(code);
     expect(result).toContain('_wmloopvar1');
     expect(result).toContain('_wmloopvar2');
+  });
+});
+
+// ── extractScriptLine ─────────────────────────────────────────────────────────
+
+describe('extractScriptLine', () => {
+  test('returns null for error with no stack', () => {
+    expect(extractScriptLine({})).toBeNull();
+  });
+
+  test('extracts line from Chrome-style stack', () => {
+    const err = { stack: 'Error: boom\n    at <anonymous>:15:8' };
+    expect(extractScriptLine(err)).toBe(15);
+  });
+
+  test('extracts line from eval-style stack', () => {
+    const err = { stack: 'TypeError: x\n    at eval at exec (app.js:1:1):22:4' };
+    expect(extractScriptLine(err)).toBe(22);
+  });
+
+  test('extracts line from Firefox-style stack', () => {
+    const err = { stack: 'myFn@debugger eval code:9:3' };
+    expect(extractScriptLine(err)).toBe(9);
+  });
+
+  test('falls back to error.lineNumber when no stack', () => {
+    const err = { stack: '', lineNumber: 42 };
+    expect(extractScriptLine(err)).toBe(42);
+  });
+
+  test('returns null for completely empty error', () => {
+    expect(extractScriptLine(null)).toBeNull();
+    expect(extractScriptLine(undefined)).toBeNull();
   });
 });

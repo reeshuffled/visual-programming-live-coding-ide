@@ -13,17 +13,21 @@ vi.mock('blockly/javascript', () => ({
   Order: { ATOMIC: 0, NEW: 1.1, FUNCTION_CALL: 2, NONE: 99 },
 }));
 
+const _GestureMock = { prototype: { handleUp: vi.fn() } };
+
 vi.mock('blockly', () => ({
   default: {
     defineBlocksWithJsonArray: vi.fn(),
     inject: vi.fn(),
     svgResize: vi.fn(),
     Themes: { Classic: {} },
+    Gesture: _GestureMock,
   },
   defineBlocksWithJsonArray: vi.fn(),
   inject: vi.fn(),
   svgResize: vi.fn(),
   Themes: { Classic: {} },
+  Gesture: _GestureMock,
 }));
 
 vi.mock('blockly/blocks', () => ({}));

@@ -17,6 +17,10 @@ function _fileIcon(ext) {
   return '📄';
 }
 
+function _lcExt(name) {
+  return name.replace(/(\.[^.]+)$/, m => m.toLowerCase());
+}
+
 function _makeFileEntry(entry, depth, onSelect) {
   const li = document.createElement('div');
   li.style.cssText = 'font-family:monospace;font-size:11px;white-space:nowrap;user-select:none;';
@@ -54,7 +58,7 @@ function _makeFileEntry(entry, depth, onSelect) {
     const icon = document.createElement('span');
     icon.textContent = _fileIcon(entry.name.split('.').pop().toLowerCase());
     const name = document.createElement('span');
-    name.textContent = entry.name;
+    name.textContent = _lcExt(entry.name);
     name.style.color = '#222';
     row.appendChild(spacer); row.appendChild(icon); row.appendChild(name);
     li.appendChild(row);
@@ -62,7 +66,7 @@ function _makeFileEntry(entry, depth, onSelect) {
     row.addEventListener('click', async () => {
       const file = await entry.getFile();
       const url = URL.createObjectURL(file);
-      onSelect?.(url, entry.name, entry);
+      onSelect?.(url, _lcExt(entry.name), entry);
     });
   }
 
@@ -119,13 +123,13 @@ function _renderFlatFiles(container, files, onSelect) {
     const icon = document.createElement('span');
     icon.textContent = _fileIcon(file.name.split('.').pop().toLowerCase());
     const name = document.createElement('span');
-    name.textContent = file.name;
+    name.textContent = _lcExt(file.name);
     name.style.color = '#222';
     row.appendChild(icon);
     row.appendChild(name);
     row.addEventListener('click', () => {
       const url = URL.createObjectURL(file);
-      onSelect?.(url, file.name, null);
+      onSelect?.(url, _lcExt(file.name), null);
     });
     row.addEventListener('mouseenter', () => { row.style.background = '#e8f0fe'; });
     row.addEventListener('mouseleave', () => { row.style.background = ''; });
@@ -203,10 +207,17 @@ export function initWM(onContentResize) {
   const _browseRefreshCbs = new Set();
   let spawnCounter = 0;
 
+  // Release a window from the owning editor's keepAlive set (if registered)
+  function _releaseWin(win) {
+    win._wmKeepAliveSet?.delete(win);
+    win._wmKeepAliveSet = null;
+  }
+
   // ── Undo / redo history ───────────────────────────────────────────────────
   const _wmHistory = [];
   const _wmRedoHistory = [];
-  const _WM_HISTORY_MAX = 20;
+  const _WM_HISTORY_MAX = 50;
+  let _wmHistoryDebounce = null;
 
   function _captureState() {
     const wins = [];
@@ -280,7 +291,14 @@ export function initWM(onContentResize) {
   }
 
   function _pushHistory() {
-    _pushSnapshot(_captureState());
+    // Capture immediately so snapshot reflects state *before* the op.
+    // Debounce: rapid ops (e.g. drag) collapse into one undo step.
+    if (_wmHistoryDebounce) return;
+    const snapshot = _captureState();
+    _wmHistoryDebounce = setTimeout(() => {
+      _wmHistoryDebounce = null;
+      _pushSnapshot(snapshot);
+    }, 500);
   }
 
   function _undoHistory() {
@@ -404,6 +422,31 @@ export function initWM(onContentResize) {
     if (ch) { try { ch.dispose(); } catch (_) {} _channels.delete(winId); }
   }
 
+  // Inject ↔ / ↕ flip buttons into a window's titlebar.
+  // target: the element to apply transform to (wm-body).
+  function _addFlipBtns(win, target) {
+    const tb = win.querySelector('.wm-titlebar');
+    if (!tb) return;
+    let flipH = false, flipV = false;
+    const apply = () => {
+      const sx = flipH ? -1 : 1, sy = flipV ? -1 : 1;
+      target.style.transform = (sx === 1 && sy === 1) ? '' : `scale(${sx},${sy})`;
+    };
+    const mk = (icon, title, onClick) => {
+      const b = document.createElement('span');
+      b.className = 'wm-btn';
+      b.title = title;
+      b.innerHTML = `<i class="fa-solid ${icon}"></i>`;
+      b.addEventListener('click', onClick);
+      return b;
+    };
+    const bH = mk('fa-left-right', 'Flip horizontal', () => { flipH = !flipH; bH.classList.toggle('active', flipH); apply(); });
+    const bV = mk('fa-up-down',    'Flip vertical',   () => { flipV = !flipV; bV.classList.toggle('active', flipV); apply(); });
+    const firstBtn = tb.querySelector('.wm-btn');
+    tb.insertBefore(bV, firstBtn);
+    tb.insertBefore(bH, bV);
+  }
+
   // Inject mute + volume controls into a window's titlebar.
   // videoEl: optional <video> element to co-control (for spawned video windows).
   function _addAudioControls(win, videoEl) {
@@ -500,8 +543,38 @@ export function initWM(onContentResize) {
     vid.addEventListener('play', update);
     vid.addEventListener('pause', update);
 
+    const syncBtn = document.createElement('button');
+    syncBtn.className = 'wm-mute';
+    syncBtn.title = 'Sync playback time with all other video windows';
+    syncBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
+    syncBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const t = vid.currentTime;
+      desktop.querySelectorAll('.wm-body video').forEach(v => {
+        if (v !== vid) { v.currentTime = t; if (!v.paused) v.play().catch(() => {}); }
+      });
+    });
+
     const audioCtrl = tb.querySelector('.wm-audio-ctrl');
+    tb.insertBefore(syncBtn, audioCtrl);
     tb.insertBefore(playBtn, audioCtrl);
+  }
+
+  function _addCopyPathBtn(win, url) {
+    const tb = win.querySelector('.wm-titlebar');
+    if (!tb || !url) return;
+    const btn = document.createElement('span');
+    btn.className = 'wm-btn wm-copy-path';
+    btn.title = 'Copy URL';
+    btn.innerHTML = '<i class="fa-regular fa-clipboard"></i>';
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      navigator.clipboard?.writeText(url).catch(() => {});
+      btn.innerHTML = '<i class="fa-solid fa-check"></i>';
+      setTimeout(() => { btn.innerHTML = '<i class="fa-regular fa-clipboard"></i>'; }, 1200);
+    });
+    const firstBtn = tb.querySelector('.wm-btn');
+    tb.insertBefore(btn, firstBtn);
   }
 
   function getWin(id) { return document.getElementById(id); }
@@ -627,12 +700,14 @@ export function initWM(onContentResize) {
       return;
     }
     if (spawnedIds.has(win.id)) {
+      _releaseWin(win);
       win._wmCleanup?.();
       win._wmRescueContent?.();
       _disposeChannel(win.id);
       _deleteWinHandle(win.id);
       win.remove();
       spawnedIds.delete(win.id);
+      win._wmUserOnClose?.();
     } else {
       win.style.display = 'none';
     }
@@ -1028,22 +1103,193 @@ export function initWM(onContentResize) {
     if (s.transparent) win?.classList.add('wm-transparent');
   }
 
+  // ── Sensor gauge window builder ───────────────────────────────────────────
+
+  function _buildSensorWindow(win, body, opts = {}) {
+    const source = opts.source || 'motion'; // 'motion' | 'gamepad' | 'geo' | 'battery'
+    body.style.cssText += 'flex-direction:column;padding:0;overflow:hidden;background:#0d0d1a;';
+
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'flex:1;width:100%;min-height:0;display:block;';
+    body.appendChild(canvas);
+
+    new ResizeObserver(() => {
+      canvas.width  = canvas.offsetWidth  * devicePixelRatio;
+      canvas.height = canvas.offsetHeight * devicePixelRatio;
+    }).observe(canvas);
+
+    const dpr = () => devicePixelRatio;
+    let rafId;
+
+    function _gauge(ctx, cx, cy, r, value, min, max, label, color) {
+      const pct = Math.max(0, Math.min(1, (value - min) / (max - min)));
+      const startA = Math.PI * 0.75, endA = Math.PI * 2.25;
+      const angle = startA + pct * (endA - startA);
+      ctx.save();
+      ctx.strokeStyle = '#1e1e2e';
+      ctx.lineWidth = r * 0.22;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 0.78, startA, endA);
+      ctx.stroke();
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 0.78, startA, angle);
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.font = `bold ${Math.round(r * 0.34)}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(value.toFixed(value < 100 ? 1 : 0), cx, cy - r * 0.08);
+      ctx.fillStyle = '#6c7086';
+      ctx.font = `${Math.round(r * 0.22)}px sans-serif`;
+      ctx.fillText(label, cx, cy + r * 0.35);
+      ctx.restore();
+    }
+
+    function _bar(ctx, x, y, w, h, value, min, max, label, color) {
+      const pct = Math.max(0, Math.min(1, (value - min) / (max - min)));
+      ctx.fillStyle = '#1e1e2e';
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y + h * (1 - pct), w, h * pct);
+      ctx.fillStyle = '#6c7086';
+      ctx.font = `${Math.round(h * 0.09)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(label, x + w / 2, y + h + h * 0.12);
+    }
+
+    function draw() {
+      rafId = requestAnimationFrame(draw);
+      const W = canvas.width, H = canvas.height;
+      if (!W || !H) return;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#0d0d1a';
+      ctx.fillRect(0, 0, W, H);
+
+      const sensors = window.sensors;
+
+      if (source === 'motion') {
+        const m = sensors?.motion?.() ?? { ax: 0, ay: 0, az: 0, alpha: 0, beta: 0, gamma: 0, magnitude: 0 };
+        const cols = ['#f38ba8', '#a6e3a1', '#89b4fa', '#fab387', '#cba6f7', '#f9e2af'];
+        const fields = [
+          { v: m.ax ?? 0, mn: -20, mx: 20, lbl: 'ax (m/s²)' },
+          { v: m.ay ?? 0, mn: -20, mx: 20, lbl: 'ay (m/s²)' },
+          { v: m.az ?? 0, mn: -20, mx: 20, lbl: 'az (m/s²)' },
+          { v: m.alpha ?? 0, mn: 0, mx: 360, lbl: 'α (yaw)' },
+          { v: m.beta  ?? 0, mn: -180, mx: 180, lbl: 'β (pitch)' },
+          { v: m.gamma ?? 0, mn: -90,  mx: 90,  lbl: 'γ (roll)' },
+        ];
+        const n = fields.length;
+        const colW = W / n;
+        const barW = colW * 0.5;
+        const barH = H * 0.78;
+        const barY = H * 0.06;
+        fields.forEach(({ v, mn, mx, lbl }, i) => {
+          _bar(ctx, colW * i + (colW - barW) / 2, barY, barW, barH, v, mn, mx, lbl, cols[i % cols.length]);
+        });
+      } else if (source === 'gamepad') {
+        const pad = sensors?.gamepad?.(0) ?? {};
+        const axes = [0, 1, 2, 3].map(i => pad.axis?.(i) ?? 0);
+        const btns = [0, 1, 2, 3].map(i => pad.pressed?.(i) ?? false);
+        const n = axes.length;
+        const r = Math.min(W / (n * 2.4), H * 0.34);
+        const cols = ['#89b4fa', '#a6e3a1', '#f38ba8', '#fab387'];
+        axes.forEach((v, i) => {
+          _gauge(ctx, W * (i + 0.5) / n, H * 0.42, r, v, -1, 1, `axis ${i}`, cols[i]);
+        });
+        btns.forEach((pressed, i) => {
+          const bx = W * (i + 0.5) / n;
+          ctx.beginPath();
+          ctx.arc(bx, H * 0.82, r * 0.22, 0, Math.PI * 2);
+          ctx.fillStyle = pressed ? '#a6e3a1' : '#1e1e2e';
+          ctx.fill();
+          ctx.fillStyle = '#6c7086';
+          ctx.font = `${Math.round(r * 0.22)}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`btn${i}`, bx, H * 0.82);
+        });
+      } else if (source === 'geo') {
+        const geo = sensors?.geo?.() ?? {};
+        const lines = [
+          `lat:  ${geo.lat?.toFixed(5) ?? '—'}`,
+          `lon:  ${geo.lon?.toFixed(5) ?? '—'}`,
+          `alt:  ${geo.altitude != null ? geo.altitude.toFixed(1) + ' m' : '—'}`,
+          `spd:  ${geo.speed != null ? geo.speed.toFixed(1) + ' m/s' : '—'}`,
+          `hdg:  ${geo.heading != null ? geo.heading.toFixed(0) + '°' : '—'}`,
+          `acc:  ${geo.accuracy != null ? '±' + geo.accuracy.toFixed(0) + ' m' : '—'}`,
+          !geo.ready ? '⟳ acquiring…' : (geo.error ? `⚠ ${geo.error}` : '✓ ready'),
+        ];
+        const fs = Math.min(H * 0.1, W * 0.06, 18 * dpr());
+        ctx.fillStyle = '#cdd6f4';
+        ctx.font = `${fs}px monospace`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        lines.forEach((l, i) => ctx.fillText(l, W * 0.08, H * 0.1 + i * fs * 1.5));
+      } else if (source === 'battery') {
+        const bat = window.__ar_battery_last ?? {};
+        const pct = bat.level ?? 0;
+        const charging = bat.charging ?? false;
+        const bw = W * 0.55, bh = H * 0.34;
+        const bx = (W - bw) / 2, by = (H - bh) / 2;
+        ctx.strokeStyle = '#cdd6f4'; ctx.lineWidth = 2 * dpr();
+        ctx.strokeRect(bx, by, bw, bh);
+        const tipW = bw * 0.06, tipH = bh * 0.35;
+        ctx.fillStyle = '#cdd6f4';
+        ctx.fillRect(bx + bw, by + (bh - tipH) / 2, tipW, tipH);
+        const fill = bw * pct;
+        ctx.fillStyle = charging ? '#a6e3a1' : pct < 0.2 ? '#f38ba8' : '#89b4fa';
+        ctx.fillRect(bx, by, fill, bh);
+        const fs = Math.min(bh * 0.42, 18 * dpr());
+        ctx.fillStyle = '#cdd6f4';
+        ctx.font = `bold ${fs}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${Math.round(pct * 100)}%${charging ? ' ⚡' : ''}`, W / 2, H / 2);
+        if (bat.timeToFull > 0) {
+          ctx.font = `${fs * 0.55}px sans-serif`;
+          ctx.fillText(`~${Math.round(bat.timeToFull / 60)} min to full`, W / 2, H / 2 + fs * 0.9);
+        } else if (bat.timeToEmpty > 0 && bat.timeToEmpty !== Infinity) {
+          ctx.font = `${fs * 0.55}px sans-serif`;
+          ctx.fillText(`~${Math.round(bat.timeToEmpty / 60)} min left`, W / 2, H / 2 + fs * 0.9);
+        }
+      }
+    }
+
+    rafId = requestAnimationFrame(draw);
+    win._wmCleanup = () => cancelAnimationFrame(rafId);
+
+    // For battery: cache latest reading for the RAF draw loop
+    if (source === 'battery' && window.sensors?.battery) {
+      window.sensors.battery().then(bat => {
+        window.__ar_battery_last = { level: bat.level, charging: bat.charging, timeToFull: bat.timeToFull, timeToEmpty: bat.timeToEmpty };
+        bat.onChange(() => {
+          window.__ar_battery_last = { level: bat.level, charging: bat.charging, timeToFull: bat.timeToFull, timeToEmpty: bat.timeToEmpty };
+        });
+      }).catch(() => {});
+    }
+  }
+
   // ── Public API (exposed as window.wm) ────────────────────────────────────
 
   const api = {
     /** Show a window by id */
     show(id) {
       const win = getWin(id);
-      if (!win) return;
+      if (!win) return api;
       win.style.display = 'flex';
       bringToFront(win);
+      return api;
     },
 
     /** Hide a window by id (spawned windows removed) */
     hide(id) {
       const win = getWin(id);
-      if (!win) return;
+      if (!win) return api;
       if (spawnedIds.has(id)) {
+        _releaseWin(win);
         win._wmCleanup?.();
         win.remove();
         spawnedIds.delete(id);
@@ -1051,19 +1297,20 @@ export function initWM(onContentResize) {
         win.style.display = 'none';
       }
       _saveState();
+      return api;
     },
 
     /** Alias for hide */
-    close(id) { api.hide(id); },
+    close(id) { api.hide(id); return api; },
 
     /** Undo last destructive window operation */
-    undo() { _undoHistory(); },
+    undo() { _undoHistory(); return api; },
 
     /** Redo last undone window operation */
-    redo() { _redoHistory(); },
+    redo() { _redoHistory(); return api; },
 
     /** Snapshot current state onto undo stack (call before custom destructive ops) */
-    pushHistory() { _pushHistory(); },
+    pushHistory() { _pushHistory(); return api; },
 
     /** Close (delete) all windows */
     closeAll() {
@@ -1071,6 +1318,7 @@ export function initWM(onContentResize) {
       [...spawnedIds].forEach(id => {
         const win = getWin(id);
         if (!win) { spawnedIds.delete(id); return; }
+        _releaseWin(win);
         win._wmCleanup?.();
         _disposeChannel(id);
         _deleteWinHandle(id);
@@ -1080,6 +1328,7 @@ export function initWM(onContentResize) {
       clearTimeout(_savePending);
       _savePending = null;
       try { localStorage.setItem(_SAVE_KEY, JSON.stringify({ wins: [] })); } catch (_) {}
+      return api;
     },
 
 
@@ -1118,47 +1367,67 @@ export function initWM(onContentResize) {
     /** Toggle visibility */
     toggle(id) {
       const win = getWin(id);
-      if (!win) return;
+      if (!win) return api;
       if (win.style.display === 'none') api.show(id); else api.hide(id);
+      return api;
     },
 
     /** Bring window to front */
     focus(id) {
       const win = getWin(id);
       if (win) bringToFront(win);
+      return api;
     },
 
     /** Move window to pixel coords */
     move(id, x, y) {
       const win = getWin(id);
-      if (!win) return;
+      if (!win) return api;
       win.style.left = `${x}px`;
       win.style.top  = `${y}px`;
+      return api;
     },
 
     /** Resize window in pixels */
     resize(id, w, h) {
       const win = getWin(id);
-      if (!win) return;
+      if (!win) return api;
       win.style.width  = `${Math.max(180, w)}px`;
       win.style.height = `${Math.max(80,  h)}px`;
       onContentResize?.();
+      return api;
     },
 
     /** Maximize a window */
     maximize(id) {
       const win = getWin(id);
-      if (!win || win.classList.contains('wm-maximized')) return;
+      if (!win || win.classList.contains('wm-maximized')) return api;
       _toggleMaximize(win);
       onContentResize?.();
+      return api;
     },
 
     /** Restore a maximized window */
     restore(id) {
       const win = getWin(id);
-      if (!win || !win.classList.contains('wm-maximized')) return;
+      if (!win || !win.classList.contains('wm-maximized')) return api;
       _toggleMaximize(win);
       onContentResize?.();
+      return api;
+    },
+
+    /** Set CSS z-index on a window (stacking order) — live, no re-spawn needed */
+    setZ(id, z) {
+      const win = getWin(id);
+      if (win) win.style.zIndex = String(z);
+      return api;
+    },
+
+    /** Set CSS opacity on a window (0 = invisible, 1 = fully opaque) — live */
+    setOpacity(id, v) {
+      const win = getWin(id);
+      if (win) win.style.opacity = String(v);
+      return api;
     },
 
     /**
@@ -1235,15 +1504,19 @@ export function initWM(onContentResize) {
           const tb = win.querySelector('.wm-titlebar');
           const chrome = tb ? tb.getBoundingClientRect().height + 1 : 29;
           const desk = win.parentElement ?? document.getElementById('desktop');
-          const maxW = desk ? desk.offsetWidth * 0.9 : vid.videoWidth;
-          const maxH = desk ? desk.offsetHeight * 0.9 : vid.videoHeight;
-          const scale = Math.min(1, maxW / vid.videoWidth, (maxH - chrome) / vid.videoHeight);
+          const capW = opts.w ?? 320;
+          const capH = opts.h ?? 240;
+          const maxW = Math.min(capW, desk ? desk.offsetWidth * 0.9 : vid.videoWidth);
+          const maxH = Math.min(capH, desk ? desk.offsetHeight * 0.9 - chrome : vid.videoHeight);
+          const scale = Math.min(1, maxW / vid.videoWidth, maxH / vid.videoHeight);
           win.style.width  = `${Math.round(vid.videoWidth  * scale)}px`;
           win.style.height = `${Math.round(vid.videoHeight * scale + chrome)}px`;
         }, { once: true });
         _cleanup = () => { vid.pause(); vid.src = ''; };
       } else if (type === 'viz') {
         _buildVizWindow(win, body, opts);
+      } else if (type === 'sensor') {
+        _buildSensorWindow(win, body, opts);
       } else if (type === 'camera' || type === 'canvas' || type === 'shader') {
         let src;
         if (type === 'camera') {
@@ -1292,7 +1565,7 @@ export function initWM(onContentResize) {
       if (_cleanup) win._wmCleanup = _cleanup;
       win._wmSpawnOpts = { title, ...opts };
 
-      if (['image','video','camera','canvas','shader','viz'].includes(type)) {
+      if (['image','video','camera','canvas','shader','viz','sensor'].includes(type)) {
         win.classList.add('wm-draggable-body');
       }
 
@@ -1302,9 +1575,29 @@ export function initWM(onContentResize) {
         if (videoEl) _addVideoControls(win, videoEl);
       }
 
+      if (['image','video'].includes(type) && opts.src) _addCopyPathBtn(win, opts.src);
+      if (['image','video','camera','canvas','shader','viz'].includes(type)) _addFlipBtns(win, body);
+      if (opts.noChrome)    win.classList.add('wm-no-chrome');
+      if (opts.transparent) win.classList.add('wm-transparent');
+
+      if (opts.onClose) win._wmUserOnClose = opts.onClose;
+
       desktop.appendChild(win);
       spawnedIds.add(id);
       bringToFront(win);
+      if (opts.z != null) win.style.zIndex = String(opts.z);
+
+      // Register as a live output for the active editor run (if any).
+      // The editor's _isLive() checks _keepAlive; removing here lets the idle watcher
+      // detect that all outputs are gone and auto-stop.
+      const _activeEdId = window.__ar_active_editor_id;
+      const _activeInst = _activeEdId != null ? window.__ar_instances?.get(_activeEdId) : null;
+      if (_activeInst?.btnState === 'running' && id !== _activeInst.canvasWinId) {
+        _activeInst._keepAlive.add(win);
+        _activeInst._hadOutput = true;
+        win._wmKeepAliveSet = _activeInst._keepAlive;
+      }
+
       _saveState();
       return id;
     },

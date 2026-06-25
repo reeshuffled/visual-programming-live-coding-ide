@@ -2,6 +2,8 @@
 // Use when: porting ShaderToy code, running on browsers without WebGPU (Firefox/older Safari),
 // or when an LLM generates GLSL because it has a much larger GLSL training corpus.
 
+import { resolveGLSL, defineGLSL, library } from './library.js';
+
 const _glShaders = [];
 
 export function cleanupGLShaders() {
@@ -109,7 +111,7 @@ function _readFft(src, bins = 32) {
 
 export class GLShader {
   constructor(fragBody, { z = 30, opacity = 1.0, video = null, container = null } = {}) {
-    this._fragSrc  = fragBody;
+    this._fragSrc  = resolveGLSL(fragBody);
     this._z        = z;
     this._opacity  = opacity;
     this._videoSrc = video;
@@ -390,5 +392,11 @@ export class GLShader {
     this._gl     = null;
     this._program = null;
     this._videoTex = null;
+  }
+
+  // Save a named GLSL body to the user library — persists across projects.
+  // Equivalent to library.glsl(name, body).
+  static define(name, body) {
+    library.glsl(name, body);
   }
 }

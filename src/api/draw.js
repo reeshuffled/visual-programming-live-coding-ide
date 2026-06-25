@@ -176,6 +176,49 @@ class DrawTarget {
     return this;
   }
 
+  // ── Pixel FX ──────────────────────────────────────────────────────────────
+
+  pixelate(source, blockSize = 8, x = 0, y = 0, w, h) {
+    const ctx = this.#ctx();
+    const dw = w ?? ctx.canvas.width - x;
+    const dh = h ?? ctx.canvas.height - y;
+    const pw = Math.max(1, Math.round(dw / blockSize));
+    const ph = Math.max(1, Math.round(dh / blockSize));
+    const off = document.createElement('canvas');
+    off.width = pw; off.height = ph;
+    const offCtx = off.getContext('2d');
+    offCtx.drawImage(source, 0, 0, pw, ph);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, x, y, dw, dh);
+    ctx.imageSmoothingEnabled = true;
+    return this;
+  }
+
+  toASCII(canvas, { cols = 80, rows, charset = ' .:-=+*#%@', bg = '#000', color = '#0f0' } = {}) {
+    const r = rows ?? Math.round(cols / 2.5);
+    const pre = document.createElement('pre');
+    pre.style.cssText = `background:${bg};color:${color};font:${Math.max(4, Math.floor(800 / cols))}px/1.1 monospace;margin:0;padding:4px;white-space:pre;overflow:hidden;`;
+    const update = (src = canvas) => {
+      const off = document.createElement('canvas');
+      off.width = cols; off.height = r;
+      const offCtx = off.getContext('2d');
+      offCtx.drawImage(src, 0, 0, cols, r);
+      const px = offCtx.getImageData(0, 0, cols, r).data;
+      let text = '';
+      for (let row = 0; row < r; row++) {
+        for (let col = 0; col < cols; col++) {
+          const i = (row * cols + col) * 4;
+          const lum = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) / 255;
+          text += charset[Math.min(charset.length - 1, Math.floor(lum * charset.length))];
+        }
+        text += '\n';
+      }
+      pre.textContent = text;
+    };
+    update(canvas);
+    return { el: pre, update };
+  }
+
   // ── Layer targeting ───────────────────────────────────────────────────────
 
   at(z) { return new DrawTarget(z, this.#gc); }

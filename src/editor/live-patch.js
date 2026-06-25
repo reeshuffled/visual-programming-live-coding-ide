@@ -75,3 +75,18 @@ export function friendlyError(raw) {
 
   return m.replace(/^(TypeError|SyntaxError|ReferenceError|RangeError|EvalError): /, "");
 }
+
+// Returns 1-based script line from an error's stack trace, or null if unparseable.
+export function extractScriptLine(error) {
+  const stack = error?.stack ?? '';
+  // Chrome/Edge/Safari: <anonymous>:LINE:COL
+  const m = stack.match(/<anonymous>:(\d+):\d+/);
+  if (m) return parseInt(m[1], 10);
+  // Eval-wrapped: eval at NAME (file:L:C):OUTER_LINE:OUTER_COL — want OUTER_LINE
+  const mEval = stack.match(/\):(\d+):\d+/);
+  if (mEval) return parseInt(mEval[1], 10);
+  // Firefox: @debugger eval code:LINE:COL
+  const m2 = stack.match(/@[^:]*:(\d+):\d+/);
+  if (m2) return parseInt(m2[1], 10);
+  return typeof error?.lineNumber === 'number' ? error.lineNumber : null;
+}

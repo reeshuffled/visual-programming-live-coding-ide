@@ -5,9 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" />
-    <link rel="stylesheet" href="src/editor/cm/lib/codemirror.css" />
-    <link rel="stylesheet" href="src/editor/cm/addon/hint/show-hint.css" />
-    <link rel="stylesheet" href="src/editor/cm/addon/fold/foldgutter.css" />
     <style>
       html, body {
         margin: 0;
@@ -258,6 +255,11 @@
       }
       .ar-toolkit-mode:hover { background: #d8dce8; color: #333; }
       .ar-toolkit-mode.ar-toolkit-mode-active { background: #1565c0; color: #fff; }
+      .ar-toolkit-search {
+        flex: 2; min-width: 0; border: none; border-left: 1px solid #d0d4de;
+        padding: 4px 6px; font-size: 11px; background: #eef0f5; color: #333; outline: none;
+      }
+      .ar-toolkit-search:focus { background: #fff; }
       .ar-toolkit-text { overflow-y: auto; flex: 1; min-height: 0; font-family: Arial, sans-serif; }
       .ar-toolkit-blocks {
         flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
@@ -320,11 +322,46 @@
         display: flex; flex-direction: column;
       }
       #editor-wrap #editor { flex: 1; min-height: 0; }
-      .CodeMirror {
+      .cm-editor {
         border-top: 1px solid #888;
         border-bottom: 1px solid #888;
         height: 100%;
+        font-size: 14px;
       }
+      .cm-editor.cm-focused { outline: none; }
+      .cm-editor .cm-scroller { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; }
+
+      /* ── CM6 tooltip base ────────────────────────────────────────────────── */
+      .cm-tooltip { z-index: 200; }
+
+      /* ── Error line highlight ────────────────────────────────────────────── */
+      .ar-error-line { background: rgba(255,60,60,0.18); text-decoration: underline wavy red; }
+
+      /* ── Param hints tooltip ─────────────────────────────────────────────── */
+      .ar-param-hint {
+        background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a;
+        border-radius: 4px; padding: 4px 8px; font-family: monospace; font-size: 12px;
+        white-space: nowrap; pointer-events: none;
+      }
+      .ar-param-name { color: #89b4fa; margin-right: 2px; }
+      .ar-param-active { color: #a6e3a1; font-weight: bold; text-decoration: underline; }
+      .ar-param-dim { color: #6c7086; }
+
+      /* ── Shader signal picker tooltip ────────────────────────────────────── */
+      .ar-signal-picker {
+        background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a;
+        border-radius: 6px; padding: 6px 8px; font-family: monospace; font-size: 12px;
+        min-width: 200px; max-width: 280px;
+      }
+      .ar-signal-picker-header { color: #89b4fa; font-size: 11px; margin-bottom: 6px; border-bottom: 1px solid #313244; padding-bottom: 4px; }
+      .ar-signal-group { margin-bottom: 4px; }
+      .ar-signal-group-label { color: #6c7086; font-size: 10px; text-transform: uppercase; margin-bottom: 2px; }
+      .ar-signal-btn {
+        display: block; width: 100%; text-align: left; padding: 2px 6px;
+        background: #313244; border: none; border-radius: 3px; color: #cdd6f4;
+        font-family: monospace; font-size: 12px; cursor: pointer; margin-bottom: 2px;
+      }
+      .ar-signal-btn:hover { background: #45475a; color: #a6e3a1; }
       #blockly-area {
         flex: 1; min-height: 200px;
         display: none; flex-direction: column;
@@ -868,22 +905,6 @@ s.start();</div>
         <p style="margin:20px 0 0; color:#555; font-size:11px; text-align:right;">Press <kbd style="background:#333;padding:2px 5px;border-radius:3px;border:1px solid #555;">?</kbd> or <kbd style="background:#333;padding:2px 5px;border-radius:3px;border:1px solid #555;">Esc</kbd> to close</p>
       </div>
     </div>
-
-    <!-- CodeMirror JavaScript -->
-    <script src="src/editor/cm/lib/codemirror.js"></script>
-    <script src="src/editor/cm/addon/lint/lint.js"></script>
-    <script src="src/editor/cm/addon/lint/jshint.js"></script>
-    <script src="src/editor/cm/addon/lint/javascript-lint.js"></script>
-    <script src="src/editor/cm/mode/javascript/javascript.js"></script>
-    <script src="src/editor/cm/addon/hint/show-hint.js"></script>
-    <script src="src/editor/cm/addon/hint/javascript-hint.js"></script>
-    <script src="src/editor/cm/addon/edit/closebrackets.js"></script>
-    <script src="src/editor/cm/addon/edit/matchbrackets.js"></script>
-    <script src="src/editor/cm/addon/edit/trailingspace.js"></script>
-    <script src="src/editor/cm/addon/selection/active-line.js"></script>
-    <script src="src/editor/cm/addon/fold/foldcode.js"></script>
-    <script src="src/editor/cm/addon/fold/brace-fold.js"></script>
-    <script src="src/editor/cm/addon/fold/foldgutter.js"></script>
 
     <!-- App JavaScript -->
     <script type="module" src="/src/runtime/app.js"></script>
