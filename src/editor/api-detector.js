@@ -101,7 +101,7 @@ function _inlineShaderStartCalled(ast) {
  *   usesShaderFX: boolean, usesPixi: boolean, usesSensors: boolean,
  *   usesCamera: boolean, usesVideo: boolean, usesVision: boolean,
  *   usesDesktop: boolean, usesMedia: boolean, usesDraw: boolean,
- *   usesLayer: boolean,
+ *   usesGetCanvas: boolean, usesLayer: boolean,
  *   shaderStartCalled: boolean,   // Shader/GLShader constructed AND .start() called
  *   shaderConstructedOnly: boolean, // Shader constructed but .start() never called
  *   parseError: string|null,
@@ -121,6 +121,7 @@ export function detectAPIUsage(code) {
     usesDesktop:  false,
     usesMedia:    false,
     usesDraw:     false,
+    usesGetCanvas: false,
     usesLayer:    false,
     usesThree:    false,
     shaderStartCalled:    false,

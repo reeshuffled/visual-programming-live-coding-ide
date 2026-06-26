@@ -7,6 +7,7 @@ import {
 } from "@mediapipe/tasks-vision";
 import { onReset } from '../runtime/reset-registry.js';
 import { notify, subscribe } from '../events/index.js';
+import { acquireCameraRunScoped } from './media-lease.js';
 
 const WASM_CDN = "https://unpkg.com/@mediapipe/tasks-vision@0.10.35/wasm";
 const MODEL_BASE = "https://storage.googleapis.com/mediapipe-models";
@@ -76,6 +77,7 @@ let _initPromise = null;
 let _ready = false;
 let _running = false;
 let _rafId = null;
+let _cameraLeased = false; // guard: acquire once per run start
 let _lastDetectionTime = 0;
 const DETECTION_INTERVAL_MS = 100;
 
@@ -257,7 +259,7 @@ function _loop() {
 
 function _ensureStarted() {
   if (_running) return;
-  if (!window.__ar_camera_on) window.__ar_enableCamera?.();
+  if (!_cameraLeased) { acquireCameraRunScoped(); _cameraLeased = true; }
   _running = true;
   if (_ready) {
     _loop();
@@ -279,6 +281,7 @@ export function preloadVision() {
 
 export function stopVision() {
   _running = false;
+  _cameraLeased = false; // allow re-acquire on next run
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
   _cache.objects = [];
   _cache.hands = [];

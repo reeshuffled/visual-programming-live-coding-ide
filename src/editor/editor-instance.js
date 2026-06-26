@@ -1203,14 +1203,8 @@ export class EditorInstance {
     const blocksActive = this.blocksMode && this.blocklyWorkspace && !workspaceIsEmpty(this.blocklyWorkspace);
     const raw = blocksActive ? getWorkspaceCode(this.blocklyWorkspace) : this.cm.state.doc.toString();
 
-    if (/\bvision\b|__ar_video|ShaderFX\.camera/.test(raw) && !window.__ar_camera_on) {
-      this._appendConsole('<span class="ar-console-err">Cannot run: camera is off. Turn on your camera first.</span>');
-      return;
-    }
-    if (/\b__ar_mic_stream\b/.test(raw) && !window.__ar_mic_on) {
-      this._appendConsole('<span class="ar-console-err">Cannot run: mic is off. Turn on your mic first.</span>');
-      return;
-    }
+    // Camera/mic are demand-driven (ADR 023): consumers acquire leases when called,
+    // so no pre-run regex checks needed.
 
     if (soft) {
       this._softReset();

@@ -3,6 +3,7 @@ import { Shader } from "./shader.js";
 import { WidgetHistory } from "./widget-history.js";
 import { onReset } from '../runtime/reset-registry.js';
 import { liveOutput } from '../runtime/keep-alive.js';
+import { acquireMicRunScoped } from './media-lease.js';
 
 const _vizs = [];
 
@@ -244,6 +245,8 @@ export class SpectrogramCanvas {
     this._signal  = null;
     this._analyser = null;
     this._micMode  = source === 'mic';
+
+    if (this._micMode) acquireMicRunScoped(); // run-scoped: auto-released on reset (ADR 023)
 
     if (!this._micMode && source) {
       if (source && typeof source === 'object' && 'fft' in source) {

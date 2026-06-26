@@ -42,7 +42,7 @@ import { external, cleanupExternal } from "../api/external.js";
 import { statusBar, cleanupStatusBar } from "../api/status-bar.js";
 import { EditorInstance } from "../editor/editor-instance.js";
 import { saveProject, loadProject, serializeProject, applyProject } from "../api/project.js";
-import { on, emit, any, tick, hold, registerCommand } from "../events/index.js";
+import { on, emit, any, tick, hold, registerCommand, subscribe } from "../events/index.js";
 import { openEventPanel } from "../api/event-panel.js";
 import "../api/input.js"; // keyboard + mouse → bus (must load after events/index.js)
 
@@ -847,6 +847,7 @@ window.onload = () => {
     });
 
     drop.addEventListener('click', (e) => {
+      e.stopPropagation();
       const li = e.target.closest('li[data-source]');
       if (!li) return;
       const source = li.dataset.source;
@@ -866,6 +867,46 @@ window.onload = () => {
     document.addEventListener('click', (e) => {
       if (!btn.contains(e.target)) drop.classList.remove('open');
     });
+
+    // Probe sensor availability and hide items that have no real data.
+    // DeviceMotionEvent exists on desktop but fires null values — detect by
+    // listening to the first event or timing out after 600ms with no real data.
+    (() => {
+      const hideSensor = (source) => {
+        const li = drop.querySelector(`li[data-source="${source}"]`);
+        if (li) li.style.display = 'none';
+        const visible = [...drop.querySelectorAll('li[data-source]')].filter(l => l.style.display !== 'none');
+        if (visible.length === 0) btn.style.display = 'none';
+      };
+
+      // Motion: probe first event; hide if all accelerometer values are null.
+      if (!window.DeviceMotionEvent) {
+        hideSensor('motion');
+      } else {
+        let probed = false;
+        const onMotion = (e) => {
+          if (probed) return;
+          probed = true;
+          window.removeEventListener('devicemotion', onMotion);
+          const a = e.accelerationIncludingGravity;
+          if (a == null || (a.x == null && a.y == null && a.z == null)) hideSensor('motion');
+        };
+        window.addEventListener('devicemotion', onMotion);
+        setTimeout(() => {
+          if (probed) return;
+          probed = true;
+          window.removeEventListener('devicemotion', onMotion);
+          hideSensor('motion'); // never fired → no sensor
+        }, 800);
+      }
+
+      // Battery: hide if API absent or promise rejects.
+      if (!navigator.getBattery) {
+        hideSensor('battery');
+      } else {
+        navigator.getBattery().catch(() => hideSensor('battery'));
+      }
+    })();
   })();
 
   // ── "Demo Gallery" button ──────────────────────────────────────────────────
@@ -930,15 +971,14 @@ window.onload = () => {
     galleryModal.addEventListener('click', (e) => { if (e.target === galleryModal) galleryModal.close(); });
   })();
 
-  // Track system-spawned viz window IDs so they can be closed when the source is toggled off.
-  let _sysMicVizId = null;
-  let _sysCamWinId = null;
+  // Camera / mic toolbar icons — spawn a viz window on click (ADR 023).
+  // No toggle semantics; streams are demand-driven via media-lease.js.
 
   const _spawnMicViz = () => {
     const desk = document.getElementById('desktop');
     const dw = desk.offsetWidth, dh = desk.offsetHeight;
     const offset = (_vizCount++ % 8) * 24;
-    _sysMicVizId = window.wm.spawn('Mic Visualizer', {
+    window.wm.spawn('Mic Visualizer', {
       type: 'viz', source: 'mic', style: 'bars',
       w: 400, h: 180,
       x: Math.round((dw - 400) / 2) + offset,
@@ -950,7 +990,7 @@ window.onload = () => {
     const desk = document.getElementById('desktop');
     const dw = desk.offsetWidth, dh = desk.offsetHeight;
     const offset = (_vizCount++ % 8) * 24;
-    _sysCamWinId = window.wm.spawn('Camera', {
+    window.wm.spawn('Camera', {
       type: 'camera',
       w: 320, h: 240,
       x: Math.round((dw - 320) / 2) + offset,
@@ -958,37 +998,22 @@ window.onload = () => {
     });
   };
 
-  // Show/hide mic viz button with mic state; auto-spawn on first enable.
-  // On toggle-off, close the system-spawned viz; warn if user-spawned viz windows remain.
-  const micVizBtn = document.getElementById('newMicVizBtn');
-  document.getElementById('micToggle')?.addEventListener('click', () => {
-    const on = window.__ar_mic_on;
-    if (micVizBtn) micVizBtn.style.display = on ? '' : 'none';
-    if (on) {
-      _spawnMicViz();
-    } else {
-      if (_sysMicVizId) { window.wm.close(_sysMicVizId); _sysMicVizId = null; }
-    }
-  });
-  document.getElementById('newMicVizBtn')?.addEventListener('click', _spawnMicViz);
+  document.getElementById('micToggle')?.addEventListener('click', _spawnMicViz);
+  document.getElementById('cameraToggle')?.addEventListener('click', _spawnCamWin);
 
-  // Show/hide camera viz button with camera state; auto-spawn on first enable.
-  // On toggle-off, close the system-spawned camera window; warn if user-spawned cam windows remain.
-  const camVizBtn = document.getElementById('newCamVizBtn');
-  document.getElementById('cameraToggle')?.addEventListener('click', () => {
-    const on = window.__ar_camera_on;
-    if (camVizBtn) camVizBtn.style.display = on ? '' : 'none';
-    if (on) {
-      _spawnCamWin();
-    } else {
-      if (_sysCamWinId) { window.wm.close(_sysCamWinId); _sysCamWinId = null; }
-      // Warn about user-spawned camera windows that remain open
-      const remaining = [...document.querySelectorAll('.wm-win')]
-        .filter(w => w.style.display !== 'none' && w._wmSpawnOpts?.type === 'camera' && w.id !== _sysCamWinId);
-      if (remaining.length) console.warn('Camera turned off — user-spawned camera window(s) still open.');
-    }
-  });
-  document.getElementById('newCamVizBtn')?.addEventListener('click', _spawnCamWin);
+  // ── Live indicator ─────────────────────────────────────────────────────────
+  // Counts all camera:open / camera:close / mic:open / mic:close bus events
+  // (toolbar AND Camera.open() multi-cam streams) and toggles .media-live on
+  // the respective toolbar icon (ADR 023).
+  {
+    let _cameraLive = 0, _micLive = 0;
+    const camBtn = document.getElementById('cameraToggle');
+    const micBtn = document.getElementById('micToggle');
+    subscribe('camera:open',  () => { _cameraLive++; camBtn?.classList.toggle('media-live', _cameraLive > 0); });
+    subscribe('camera:close', () => { _cameraLive = Math.max(0, _cameraLive - 1); camBtn?.classList.toggle('media-live', _cameraLive > 0); });
+    subscribe('mic:open',     () => { _micLive++;    micBtn?.classList.toggle('media-live', _micLive > 0); });
+    subscribe('mic:close',    () => { _micLive = Math.max(0, _micLive - 1);    micBtn?.classList.toggle('media-live', _micLive > 0); });
+  }
 
   // ── Files button ──────────────────────────────────────────────────────────
   const filesBtn = document.getElementById('filesBtn');

@@ -1,6 +1,7 @@
 import { resolveDrawable } from './drawable-source.js';
 import { onReset } from '../runtime/reset-registry.js';
 import { liveOutput } from '../runtime/keep-alive.js';
+import { acquireCameraRunScoped } from './media-lease.js';
 
 const _targets   = new Map();
 const _backdrops = [];
@@ -317,11 +318,13 @@ class DrawTarget {
     // Build the stop handle up-front so the raf closure can reference it
     let _rafId = null;
     let _live  = null;
+    let _cameraLease = null;
     const h = {
       layer: targetZ,
       stop: () => {
         if (_rafId !== null) { cancelAnimationFrame(_rafId); _rafId = null; }
         _live?.release(); _live = null;
+        _cameraLease?.release(); _cameraLease = null;
         const i = _backdrops.indexOf(h);
         if (i !== -1) _backdrops.splice(i, 1);
       },
@@ -332,6 +335,7 @@ class DrawTarget {
     let drawable = null;
     if (typeof source === 'string') {
       if (source === 'camera') {
+        _cameraLease = acquireCameraRunScoped();
         drawable = document.getElementById('camera');
       } else {
         // URL string → static image

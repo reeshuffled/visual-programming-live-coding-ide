@@ -9,6 +9,7 @@ import { mountLayerCanvas } from './layer.js';
 import { onReset } from '../runtime/reset-registry.js';
 import { notify } from '../events/index.js';
 import { registerShaderInstance } from './shader.js';
+import { acquireMicRunScoped } from './media-lease.js';
 
 const _glShaders = [];
 
@@ -348,7 +349,7 @@ export class GLShader {
       this._boundSignal   = source;
       this._boundAnalyser = null;
     } else {
-      if (source === 'mic' && !window.__ar_mic_on) window.__ar_enableMic?.();
+      if (source === 'mic') acquireMicRunScoped();
       this._boundSignal   = null;
       this._boundAnalyser = source;
     }

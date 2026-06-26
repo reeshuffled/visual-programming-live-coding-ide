@@ -8,6 +8,7 @@ import { WidgetEvents } from './widget-events.js';
 import { onReset } from '../runtime/reset-registry.js';
 import { notify, registerCommand } from '../events/index.js';
 import { recordStream, compositeCanvasStream } from './recorder.js';
+import { acquireCamera, acquireMic } from './media-lease.js';
 
 // ── Paint-overlay WidgetEvents registry (for cleanupPaintOverlays) ────────────
 
@@ -365,7 +366,7 @@ export function initWM(onContentResize) {
       if (spawnedIds.has(win.id)) {
         const opts = win._wmSpawnOpts;
         if (!opts) return;
-        if (['canvas','shader','camera'].includes(opts.type)) return;
+        if (['canvas','shader'].includes(opts.type)) return;
         const isBlobSrc = opts.src?.startsWith('blob:');
         entry.spawned = true;
         entry.title   = win.querySelector('.wm-title')?.textContent ?? opts.title;
@@ -1484,6 +1485,7 @@ export function initWM(onContentResize) {
     let toneAn = null;
     let rawAn  = null;
     let _currentSrc = null;
+    let _micLease = null; // window-scoped mic lease (ADR 023)
 
     function disconnect() {
       if (toneAn) { try { toneAn.dispose(); } catch (_) {} toneAn = null; }
@@ -1491,6 +1493,8 @@ export function initWM(onContentResize) {
         try { rawAn.disconnect(); } catch (_) {}
       }
       rawAn = null;
+      // Release mic lease when switching away from 'mic' source
+      if (_micLease) { _micLease.release(); _micLease = null; }
     }
 
     function setSource(id) {
@@ -1501,7 +1505,8 @@ export function initWM(onContentResize) {
         toneAn = new Tone.Analyser({ type: style === 'wave' ? 'waveform' : 'fft', size: 128 });
         Tone.getDestination().connect(toneAn);
       } else if (id === 'mic') {
-        rawAn = window.__ar_mic_analyser;
+        _micLease = acquireMic(); // window-scoped (ADR 023)
+        rawAn = window.__ar_mic_analyser; // may be null until mic:ready fires (self-heals in frame())
       } else if (id.startsWith('vid:')) {
         const vid = document.getElementById(id.slice(4))?.querySelector('video');
         if (vid) {
@@ -1586,7 +1591,10 @@ export function initWM(onContentResize) {
 
     function start() { if (!rafId) frame(); }
     function stop()  { cancelAnimationFrame(rafId); rafId = null; }
-    function cleanup() { stop(); disconnect(); }
+    function cleanup() {
+      stop();
+      disconnect(); // also releases _micLease if set
+    }
 
     if (opts.autoStart !== false) start();
     return { canvas, start, stop, setSource, setStyle, cleanup };
@@ -1631,10 +1639,10 @@ export function initWM(onContentResize) {
       const o = document.createElement('option'); o.value = s; o.textContent = s;
       styleSel.appendChild(o);
     }
-    srcBar.appendChild(srcSel);
+    if (!opts.locked) srcBar.appendChild(srcSel);
     srcBar.appendChild(styleSel);
 
-    if (opts.locked) srcSel.disabled = true;
+    if (opts.locked) srcSel.style.display = 'none';
 
     const popBtn = document.createElement('button');
     popBtn.title = 'Open in standalone window';
@@ -1683,7 +1691,7 @@ export function initWM(onContentResize) {
     function startCore() {
       if (core) { core.cleanup(); core = null; }
       core = _createSpectrumCore(canvas, () => styleSel.value);
-      core.setSource(srcSel.value);
+      core.setSource(opts.locked ? 'mic' : srcSel.value);
     }
 
     srcSel.addEventListener('mousedown', refreshSources);
@@ -1701,7 +1709,7 @@ export function initWM(onContentResize) {
       panel.style.display = open ? 'flex' : 'none';
       vizBtn.classList.toggle('active', open);
       if (open && !core) {
-        refreshSources();
+        if (!opts.locked) refreshSources();
         startCore();
       } else if (!open && core) {
         core.cleanup(); core = null;
@@ -2346,7 +2354,10 @@ export function initWM(onContentResize) {
         _buildSensorWindow(win, body, opts);
       } else if (type === 'camera' || type === 'canvas' || type === 'shader') {
         let src;
+        let _camLease = null;
         if (type === 'camera') {
+          // Acquire toolbar camera — window-scoped lease (ADR 023).
+          _camLease = acquireCamera();
           src = document.getElementById('camera');
         } else if (type === 'canvas') {
           src = opts.canvas instanceof HTMLCanvasElement
@@ -2385,7 +2396,7 @@ export function initWM(onContentResize) {
             rafId = requestAnimationFrame(copy);
           };
           rafId = requestAnimationFrame(copy);
-          _cleanup = () => cancelAnimationFrame(rafId);
+          _cleanup = () => { cancelAnimationFrame(rafId); _camLease?.release(); };
         }
       }
 

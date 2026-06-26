@@ -245,6 +245,11 @@ function emitStmt(node, env, ind = '') {
     }
     case 'ExpressionStatement': {
       const x = node.expression;
+      // skip harness trace calls injected by live-patch (not valid WGSL)
+      if (x.type === 'CallExpression' &&
+          x.callee?.type === 'MemberExpression' &&
+          x.callee.object?.name === 'window' &&
+          String(x.callee.property?.name).startsWith('__ar')) return null;
       if (x.type === 'UpdateExpression') {
         const op = x.operator === '++' ? '+= 1' : '-= 1';
         return `${ind}${emitExpr(x.argument, env)} ${op};`;

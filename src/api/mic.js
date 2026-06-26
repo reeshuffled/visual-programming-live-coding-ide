@@ -1,13 +1,13 @@
+import { notify } from '../events/index.js';
+import { initMicLease } from './media-lease.js';
+
 export function initMic() {
-  let micOn = false;
   let currentStream = null;
   let audioCtx = null;
   let analyser = null;
   let rafId = null;
 
-  const toggle = document.getElementById("micToggle");
-
-  // Hidden canvas kept for shader.micVizShader() / audio.micCanvas compatibility
+  // Hidden canvas kept for shader.micVizShader() / audio.micCanvas compatibility.
   const vizCanvas = document.getElementById("mic-viz");
   vizCanvas.width = 512;
   vizCanvas.height = 64;
@@ -39,67 +39,62 @@ export function initMic() {
     }
   };
 
-  const startMic = () => {
-    if (!audioCtx) {
-      audioCtx = new AudioContext();
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 128;
-      audioCtx.createMediaStreamSource(currentStream).connect(analyser);
-      window.__ar_mic_analyser = analyser;
-    }
-    if (audioCtx.state === "suspended") audioCtx.resume();
-    if (!rafId) drawBars();
-  };
-
-  const stopMic = () => {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-    ctx.clearRect(0, 0, vizCanvas.width, vizCanvas.height);
-  };
-
-  const enableMic = () => {
-    if (micOn) return;
-    micOn = true;
-    window.__ar_mic_on = true;
-    toggle.innerHTML = '<i class="fa-solid fa-microphone"></i>';
-    toggle.classList.add("active");
-    currentStream?.getAudioTracks().forEach((t) => (t.enabled = true));
-    startMic();
-    console.log('[createos] Mic auto-enabled');
-  };
-
-  window.__ar_enableMic = enableMic;
-
-  toggle.addEventListener("click", () => {
-    micOn = !micOn;
-    window.__ar_mic_on = micOn;
-    toggle.innerHTML = micOn
-      ? '<i class="fa-solid fa-microphone"></i>'
-      : '<i class="fa-solid fa-microphone-slash"></i>';
-    toggle.classList.toggle("active", micOn);
-    currentStream?.getAudioTracks().forEach((t) => (t.enabled = micOn));
-    micOn ? startMic() : stopMic();
-  });
-
-  const tryAcquireMic = () => {
-    if (currentStream) return;
+  // _startMic: called by media-lease on 0→1 (first consumer).
+  const _startMic = () => {
+    if (currentStream) return; // already live (re-entry guard)
     navigator.mediaDevices
       .getUserMedia({ audio: true, video: false })
       .then((stream) => {
         currentStream = stream;
         window.__ar_mic_stream = stream;
-        stream.getAudioTracks().forEach((t) => (t.enabled = false));
-        toggle.style.display = "inline-flex";
+
+        // Wire up Web Audio analyser
+        if (!audioCtx) {
+          audioCtx = new AudioContext();
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 128;
+          window.__ar_mic_analyser = analyser;
+        }
+        audioCtx.createMediaStreamSource(currentStream).connect(analyser);
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        if (!rafId) drawBars();
+
+        window.__ar_mic_on = true;
+        notify('mic:open', { toolbar: true });
+        notify('mic:ready', { toolbar: true });
       })
-      .catch(() => {});
+      .catch((err) => {
+        notify('mic:error', { error: err?.message ?? String(err) });
+        console.warn("Mic unavailable:", err?.message ?? err);
+      });
   };
 
-  if (navigator.mediaDevices?.getUserMedia) {
-    tryAcquireMic();
-    navigator.permissions?.query({ name: "microphone" }).then((status) => {
-      status.addEventListener("change", () => {
-        if (status.state === "granted") tryAcquireMic();
-      });
-    }).catch(() => {});
-  }
+  // _stopMic: called by media-lease on 1→0 (last consumer released).
+  const _stopMic = () => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    ctx.clearRect(0, 0, vizCanvas.width, vizCanvas.height);
+    currentStream?.getAudioTracks().forEach((t) => t.stop());
+    currentStream = null;
+    window.__ar_mic_stream = null;
+    window.__ar_mic_analyser = null;
+    window.__ar_mic_on = false;
+    analyser = null;
+    // Reset AudioContext so next acquire creates a fresh one.
+    if (audioCtx) {
+      try { audioCtx.close(); } catch (_) {}
+      audioCtx = null;
+    }
+    notify('mic:close', { toolbar: true });
+  };
+
+  // Permission change watcher.
+  navigator.permissions?.query({ name: "microphone" }).then((status) => {
+    status.addEventListener("change", () => {
+      // If permission just granted and we have pending consumers (but no stream),
+      // media-lease already holds the 0→1 trigger — nothing to do here.
+    });
+  }).catch(() => {});
+
+  // Register with media-lease (ADR 023).
+  initMicLease(_startMic, _stopMic);
 }

@@ -182,6 +182,7 @@ export class Drumpad {
           });
         },
       },
+      keepIconOnClose: true,
       onDestroy: () => this._destroy(this._playBtn),
     });
     if (!shell) return;

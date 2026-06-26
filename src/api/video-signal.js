@@ -1,4 +1,5 @@
 import { onReset } from '../runtime/reset-registry.js';
+import { acquireCameraRunScoped } from './media-lease.js';
 // ── Video Signal Bus ──────────────────────────────────────────────────────────
 // Samples pixel data from any canvas/video source and exposes it as live
 // signal objects that can drive audio params, effects, or anything numeric.
@@ -34,6 +35,7 @@ export const VideoSignalAPI = {
   // Sample a region of any canvas/video source as a live signal.
   // opts: { x, y } = normalized center (0–1), radius = normalized region size, fps = sample rate
   signal(source, { x = 0.5, y = 0.5, radius = 0.05, fps = 30 } = {}) {
+    if (source === 'camera') acquireCameraRunScoped();
     const getSource = _resolveSource(source);
 
     const off    = document.createElement('canvas');

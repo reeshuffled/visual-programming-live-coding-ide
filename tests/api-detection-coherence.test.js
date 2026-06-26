@@ -25,6 +25,7 @@ const SAMPLES = {
   usesDesktop:  'desktop.files();',
   usesMedia:    'Media.image(url);',
   usesDraw:     'draw.circle(1, 2, 3);',
+  usesGetCanvas: 'getCanvas(0);',
   usesLayer:    'getLayer(0);',
   usesThree:    'const t = new ThreeScene();',
 };
@@ -37,7 +38,7 @@ const META_RESULT_KEYS = ['shaderStartCalled', 'shaderConstructedOnly', 'parseEr
 // be read by execute() in editor-instance.js; the rest are detected-but-not-yet-
 // wired (informational / reserved) and explicitly listed here on purpose.
 const CONSUMED = [
-  'usesAudio', 'usesDraw', 'usesGLShader', 'usesLayer',
+  'usesAudio', 'usesDraw', 'usesGetCanvas', 'usesGLShader', 'usesLayer',
   'usesPixi', 'usesShader', 'usesShaderFX', 'usesThree',
 ];
 const DETECTED_UNCONSUMED = [

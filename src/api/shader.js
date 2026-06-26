@@ -5,6 +5,7 @@ import { onReset } from '../runtime/reset-registry.js';
 import { liveOutput } from '../runtime/keep-alive.js';
 import { mountLayerCanvas } from './layer.js';
 import { notify, registerCommand } from '../events/index.js';
+import { acquireCameraRunScoped, acquireMicRunScoped } from './media-lease.js';
 
 const _shaders = [];
 const _shaderRegistry = new Map(); // id → Shader instance (for event bus command handlers)
@@ -517,6 +518,7 @@ export class ShaderFX {
   // camOrEffect: CameraStream from Camera.open(), or an effect name string (uses toolbar camera)
   static cameraShader(camOrEffect = 'greyscale', effect = 'greyscale') {
     const isStream = camOrEffect && typeof camOrEffect !== 'string';
+    if (!isStream) acquireCameraRunScoped(); // toolbar camera — run-scoped lease
     const src = isStream ? camOrEffect : window.__ar_video;
     const eff = isStream ? effect : camOrEffect;
     return new Shader(CAMERA_PRESETS[eff] ?? CAMERA_PRESETS.greyscale, { video: src });
@@ -539,7 +541,7 @@ export class ShaderFX {
   }
 
   static micVizShader(effect = 'greyscale') {
-    if (!window.__ar_mic_on) window.__ar_enableMic?.();
+    acquireMicRunScoped();
     const src = window.__ar_mic_viz ?? null;
     return new Shader(CAMERA_PRESETS[effect] ?? CAMERA_PRESETS.greyscale, { video: src });
   }

@@ -4,6 +4,7 @@ import { Drumpad } from "./drumpad.js";
 import { Piano } from "./piano.js";
 import { onReset } from '../runtime/reset-registry.js';
 import { notify, registerCommand } from '../events/index.js';
+import { acquireMicRunScoped } from './media-lease.js';
 
 const _nativeSetInterval = window.setInterval.bind(window);
 const _nativeClearInterval = window.clearInterval.bind(window);
@@ -14,6 +15,7 @@ const _cleanupFns = [];
 const _patternRegistry = new Map(); // patId → Pattern instance
 let _patIdCounter = 0;
 let _masterFftSignal = null;
+let _micLeased = false; // guard: acquire toolbar mic lease once per run
 let _recognition = null;
 const _wordHandlers = new Map();
 const _speechHandlers = [];
@@ -74,7 +76,7 @@ function _readFft(src, bins) {
 // Wrap a Tone node with an internal Analyser; pass through AnalyserNode/Tone.Analyser/string.
 function _makeAnalyser(source, bins) {
   if (!source || source === 'mic') {
-    if (source === 'mic' && !window.__ar_mic_on) window.__ar_enableMic?.();
+    if (source === 'mic') _ensureMicLeased();
     return source;
   }
   if (typeof source.getValue === 'function') return source; // Tone.Analyser
@@ -117,6 +119,13 @@ function _ensureRecognition() {
   return r;
 }
 
+// Acquire the toolbar mic lease once per run (idempotent within a run via _micLeased guard).
+function _ensureMicLeased() {
+  if (_micLeased) return;
+  _micLeased = true;
+  acquireMicRunScoped();
+}
+
 export function cleanupAudio() {
   _patternRegistry.clear();
   _patIdCounter = 0;
@@ -139,6 +148,7 @@ export function cleanupAudio() {
   }, 100);
 
   _masterFftSignal = null;
+  _micLeased = false; // allow re-acquire on next run
   _noteHooks.length = 0;
   if (_recognition) {
     _recognition.onend = null;
@@ -919,9 +929,9 @@ class AudioAPI {
     return m;
   }
 
-  // Live RMS amplitude 0–1 from the harness mic AnalyserNode. Auto-enables mic on first call.
+  // Live RMS amplitude 0–1 from the harness mic AnalyserNode. Auto-acquires mic on first call.
   get level() {
-    if (!window.__ar_mic_on) window.__ar_enableMic?.();
+    _ensureMicLeased();
     const analyser = window.__ar_mic_analyser;
     if (!analyser) return 0;
     const data = new Uint8Array(analyser.fftSize);

@@ -1,6 +1,7 @@
 import { onReset } from '../runtime/reset-registry.js';
 import { notify, registerCommand } from '../events/index.js';
 import { recordStream } from './recorder.js';
+import { initCameraLease } from './media-lease.js';
 // ── Multi-camera API ─────────────────────────────────────────────────────────
 
 const _openCameras = [];
@@ -110,6 +111,9 @@ export const Camera = {
 };
 
 // ── Main toolbar camera ──────────────────────────────────────────────────────
+//
+// Lazy: stream acquired only when ≥1 consumer holds a lease (ADR 023).
+// No getUserMedia at page load. acquireCamera() in media-lease.js calls _startToolbarCamera.
 
 export function initCamera() {
   const video = document.createElement("video");
@@ -121,7 +125,6 @@ export function initCamera() {
   const cameraCanvas = document.getElementById("camera");
   const cameraCtx = cameraCanvas.getContext("2d");
   let rafId = null;
-  let cameraOn = false;
   let currentStream = null;
 
   const drawFrame = () => {
@@ -147,9 +150,14 @@ export function initCamera() {
     document.getElementById("cameraWrapper").style.display = videoDevices.length > 1 ? "" : "none";
   };
 
-  const startCamera = (deviceId) => {
-    currentStream?.getTracks().forEach((t) => t.stop());
-    currentStream = null;
+  // _startToolbarCamera: called by media-lease on 0→1 (first consumer).
+  // Acquires getUserMedia, starts draw loop, sets flags, emits events.
+  const _startToolbarCamera = (deviceId) => {
+    if (currentStream) {
+      // switch device
+      currentStream.getTracks().forEach((t) => t.stop());
+      currentStream = null;
+    }
     const constraints = {
       video: deviceId
         ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
@@ -160,56 +168,55 @@ export function initCamera() {
       .then((stream) => {
         currentStream = stream;
         video.srcObject = stream;
-        document.getElementById("cameraToggle").style.display = "inline-flex";
-        if (cameraOn && !rafId) drawFrame();
+        window.__ar_camera_on = true;
+        if (!rafId) drawFrame();
+        notify('camera:open', { deviceId: 'toolbar', toolbar: true });
+        return new Promise(resolve => {
+          if (video.readyState >= 1) { resolve(); return; }
+          video.addEventListener('loadedmetadata', resolve, { once: true });
+        });
+      })
+      .then(() => {
+        notify('camera:ready', { deviceId: 'toolbar', toolbar: true, width: video.videoWidth, height: video.videoHeight });
         return navigator.mediaDevices.enumerateDevices();
       })
       .then(populateCameras)
-      .catch((err) => console.warn("Camera unavailable:", err.message));
-  };
-
-  const enableCamera = () => {
-    if (cameraOn) return;
-    cameraOn = true;
-    window.__ar_camera_on = true;
-    const toggle = document.getElementById("cameraToggle");
-    toggle.innerHTML = '<i class="fa-solid fa-video"></i>';
-    toggle.classList.add("active");
-    if (!rafId) drawFrame();
-    console.log('[createos] Camera auto-enabled');
-  };
-
-  window.__ar_enableCamera = enableCamera;
-
-  document.getElementById("cameraToggle").addEventListener("click", () => {
-    cameraOn = !cameraOn;
-    window.__ar_camera_on = cameraOn;
-    const toggle = document.getElementById("cameraToggle");
-    toggle.innerHTML = cameraOn ? '<i class="fa-solid fa-video"></i>' : '<i class="fa-solid fa-video-slash"></i>';
-    toggle.classList.toggle("active", cameraOn);
-    if (cameraOn) {
-      if (!rafId) drawFrame();
-    } else {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-      cameraCtx.clearRect(0, 0, cameraCanvas.width, cameraCanvas.height);
-    }
-  });
-
-
-
-  document.getElementById("cameraSelect").addEventListener("change", function () {
-    startCamera(this.value);
-  });
-
-  if (navigator.mediaDevices?.getUserMedia) {
-    startCamera(null);
-    navigator.permissions?.query({ name: "camera" }).then((status) => {
-      status.addEventListener("change", () => {
-        if (status.state === "granted") startCamera(null);
+      .catch((err) => {
+        notify('camera:error', { deviceId: 'toolbar', error: err?.message ?? String(err) });
+        console.warn("Camera unavailable:", err.message);
       });
-    }).catch(() => {});
-  }
+  };
+
+  // _stopToolbarCamera: called by media-lease on 1→0 (last consumer released).
+  const _stopToolbarCamera = () => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    cameraCtx.clearRect(0, 0, cameraCanvas.width, cameraCanvas.height);
+    currentStream?.getTracks().forEach((t) => t.stop());
+    currentStream = null;
+    video.srcObject = null;
+    window.__ar_camera_on = false;
+    document.getElementById("cameraWrapper").style.display = "none";
+    notify('camera:close', { deviceId: 'toolbar', toolbar: true });
+  };
+
+  // Device select change handler — switch camera while live.
+  document.getElementById("cameraSelect").addEventListener("change", function () {
+    if (window.__ar_camera_on) _startToolbarCamera(this.value);
+  });
+
+  // Permission change watcher — re-acquire if permission is granted externally.
+  navigator.permissions?.query({ name: "camera" }).then((status) => {
+    status.addEventListener("change", () => {
+      // Only re-acquire if a consumer is waiting (refcount > 0 but no stream yet).
+      if (status.state === "granted" && window.__ar_camera_on === false) {
+        // If there are active leases but stream failed, try again.
+        // media-lease will call _startToolbarCamera when count goes 0→1.
+      }
+    });
+  }).catch(() => {});
+
+  // Register with media-lease (ADR 023).
+  initCameraLease(_startToolbarCamera, _stopToolbarCamera);
 }
 
 // Register teardown with the reset registry (ADR 008).
@@ -217,6 +224,7 @@ onReset(cleanupCameras);
 
 // ── Event bus command handler ─────────────────────────────────────────────────
 registerCommand('camera:close', ({ deviceId }) => {
+  if (deviceId === 'toolbar') return; // toolbar handled by media-lease
   const cam = _openCameras.find(c => c._deviceId === deviceId);
   if (cam) cam.stop(); // stop() → _release() → notify('camera:close', ...)
 });

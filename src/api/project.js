@@ -110,10 +110,6 @@ export function serializeProject(wm, instances) {
 
   return {
     version: 1,
-    toolbar: {
-      micOn:    !!window.__ar_mic_on,
-      cameraOn: !!window.__ar_camera_on,
-    },
     windows,
     desktop: serializeDesktop({ forProject: true }),
   };
@@ -213,9 +209,7 @@ export async function applyProject(data, wm, instances, appAPI) {
     }
   }
 
-  // Toolbar state
-  if (data.toolbar?.micOn    && !window.__ar_mic_on)    document.getElementById('micToggle')?.click();
-  if (data.toolbar?.cameraOn && !window.__ar_camera_on) document.getElementById('cameraToggle')?.click();
+  // Toolbar state: mic/camera no longer serialized; streams are demand-driven (ADR 023).
 }
 
 // ── File I/O ──────────────────────────────────────────────────────────────────

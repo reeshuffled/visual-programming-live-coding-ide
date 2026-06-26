@@ -83,6 +83,28 @@
         box-shadow: 0 2px 6px rgba(0,0,0,0.4);
       }
       nav ul li[data-tip]:hover::after { opacity: 1; }
+
+      /* ── Media live indicator (ADR 023) ──────────────────────────────────── */
+      /* Pulsing red dot on camera/mic icons while device is active.           */
+      nav li.media-live { position: relative; }
+      nav li.media-live::before {
+        content: '';
+        position: absolute;
+        top: 4px; right: 4px;
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        background: #e53935;
+        box-shadow: 0 0 0 0 rgba(229,57,53,0.6);
+        animation: media-live-pulse 1.4s ease-in-out infinite;
+        pointer-events: none;
+        z-index: 1;
+      }
+      @keyframes media-live-pulse {
+        0%   { box-shadow: 0 0 0 0   rgba(229,57,53,0.6); }
+        70%  { box-shadow: 0 0 0 6px rgba(229,57,53,0);   }
+        100% { box-shadow: 0 0 0 0   rgba(229,57,53,0);   }
+      }
+
       .btn-green {
         background: #2e7d32 !important; color: #fff !important;
         box-shadow: 0 4px 0 #1a4d1d, inset 0 1px 0 rgba(255,255,255,0.15) !important;
@@ -815,13 +837,11 @@ s.start();</div>
           </ul>
         </li>
         <li id="runAllBtn" data-tip="Run All Editors"><i class="fa-solid fa-play"></i><i class="fa-solid fa-layer-group" style="font-size:8px;margin-left:2px;"></i></li>
-        <li id="micToggle" style="display:none;"><i class="fa-solid fa-microphone-slash"></i></li>
-        <li id="newMicVizBtn" data-tip="New Mic Visualizer" style="display:none;"><i class="fa-solid fa-microphone"></i><i class="fa-solid fa-chart-simple" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="cameraToggle" style="display:none;"><i class="fa-solid fa-video-slash"></i></li>
+        <li id="micToggle" data-tip="Open Mic Visualizer"><i class="fa-solid fa-microphone"></i></li>
+        <li id="cameraToggle" data-tip="Open Camera Window"><i class="fa-solid fa-video"></i></li>
         <li id="cameraWrapper" class="no-btn" style="display:none;">
           Camera: <select id="cameraSelect"></select>
         </li>
-        <li id="newCamVizBtn" data-tip="New Camera Window" style="display:none;"><i class="fa-solid fa-video"></i><i class="fa-solid fa-window-restore" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
         <li id="galleryBtn" data-tip="Demo Gallery" style="margin-left:auto;"><i class="fa-solid fa-images"></i></li>
         <li id="helpBtn" data-tip="API Quick Reference"><i class="fa-solid fa-circle-question"></i></li>
         <li id="saveProjectBtn" data-tip="Export project"><i class="fa-solid fa-download"></i></li>
