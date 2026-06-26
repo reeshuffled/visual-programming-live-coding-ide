@@ -173,7 +173,6 @@ export function mountWidgetShell(opts) {
   body.style.cssText += `background:${bg};overflow:hidden;padding:0;flex-direction:column;gap:0;`;
   for (const row of rows) if (row) body.appendChild(row);
 
-  win._wmCleanup   = () => onDestroy?.();
   win._widgetType  = widgetType;
   win._widgetState = () => getState();
 
@@ -185,8 +184,11 @@ export function mountWidgetShell(opts) {
 
   // Debounced autosave → desktop icon. getIconId/setIconId let the widget keep
   // owning _desktopIconId (round-trips through getState) with no behaviour change.
+  const _wasFresh = !saveCfg.getIconId(); // true when created new (not restored)
+  let _saveCallCount = 0;
   let _saveTimer = null;
   const save = () => {
+    _saveCallCount++;
     clearTimeout(_saveTimer);
     _saveTimer = setTimeout(() => {
       const content = JSON.stringify(getState());
@@ -200,6 +202,16 @@ export function mountWidgetShell(opts) {
         window.desktop?.updateUrl(id, url, content);
       }
     }, 300);
+  };
+
+  // If widget was born fresh and closed without any real interaction (only the
+  // init autosave ran), remove the desktop icon — mirrors empty-editor behavior.
+  win._wmCleanup = () => {
+    onDestroy?.();
+    if (_wasFresh && _saveCallCount <= 1) {
+      const id = saveCfg.getIconId();
+      if (id) window.desktop?.remove(id);
+    }
   };
 
   onMount?.();

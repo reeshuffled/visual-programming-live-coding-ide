@@ -1,4 +1,5 @@
 import { onReset } from '../runtime/reset-registry.js';
+import { notify } from '../events/index.js';
 // sensors.js — unified sensory signal bus
 // Every sensor returns a signal object with live getters + .stream(fn) RAF push.
 // Edge triggers (onMove, onShake, onButton, etc.) follow the audio.onLevel pattern.
@@ -284,7 +285,8 @@ export const SensorsAPI = {
       // Fires when total acceleration magnitude >= threshold (m/s²). Default 15 ≈ hard shake.
       onShake(threshold = 15, onEnter, onExit) {
         _edgeTrigger(() => sig.magnitude, threshold,
-          () => onEnter(sig), onExit ? () => onExit(sig) : undefined);
+          () => { notify('sensor:shake', { magnitude: sig.magnitude }); onEnter(sig); },
+          onExit ? () => onExit(sig) : undefined);
         return sig;
       },
 
@@ -331,6 +333,7 @@ export const SensorsAPI = {
         _speed   = pos.coords.speed;
         _heading = pos.coords.heading;
         _err     = null;
+        notify('sensor:geo', { lat: _lat, lon: _lon, accuracy: _acc });
       },
       err => { _err = err.message; },
       { enableHighAccuracy: highAccuracy, maximumAge: 5000, timeout: 10000 }
@@ -428,7 +431,7 @@ export const SensorsAPI = {
       },
 
       onChange(fn) {
-        const cb = () => fn(sig);
+        const cb = () => { notify('sensor:battery', { level: b.level, charging: b.charging }); fn(sig); };
         b.addEventListener('levelchange',    cb);
         b.addEventListener('chargingchange', cb);
         _cleanupFns.push(() => {

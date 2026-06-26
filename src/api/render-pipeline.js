@@ -13,8 +13,10 @@
 import { resolveDrawable, _isCanvas, _isVideo } from './drawable-source.js';
 import { liveOutput } from '../runtime/keep-alive.js';
 import { onReset } from '../runtime/reset-registry.js';
+import { notify, registerCommand } from '../events/index.js';
 
 const _pipelines = [];
+const _stageRegistry = new Map(); // stageId → stage instance
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 // Source resolution + duck-type helpers live in drawable-source.js (ADR 006).
@@ -126,6 +128,12 @@ class AsciiStage {
     }
   }
 
+  set(props) {
+    if (props.color   !== undefined) this._color   = props.color;
+    if (props.bg      !== undefined) this._bg      = props.bg;
+    if (props.charset !== undefined) this._charset = props.charset;
+  }
+
   _getSource() { return this._canvas; }
   get canvas()  { return this._canvas; }
 
@@ -175,6 +183,10 @@ class PixelateStage {
     this._ctx.imageSmoothingEnabled = true;
   }
 
+  set(props) {
+    if (props.blockSize !== undefined) this._blockSize = props.blockSize;
+  }
+
   _getSource() { return this._canvas; }
   get canvas()  { return this._canvas; }
 
@@ -212,6 +224,10 @@ class FxStage {
     this._ctx.filter = this._filter;
     this._ctx.drawImage(src, 0, 0, this._canvas.width, this._canvas.height);
     this._ctx.filter = 'none';
+  }
+
+  set(props) {
+    if (props.filter !== undefined) this._filter = props.filter;
   }
 
   _getSource() { return this._canvas; }
@@ -487,28 +503,48 @@ export class Pipeline {
 
   // ── Stage chain methods (each returns `this`) ─────────────────────────────
 
-  ascii(opts = {}) {
-    this._stages.push(new AsciiStage(this._last(), opts));
+  ascii(opts = {}, id) {
+    const stage = new AsciiStage(this._last(), opts);
+    stage._id = id ?? `${this._id}-ascii-${this._stages.length}`;
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'ascii' });
     return this;
   }
 
-  pixelate(opts = {}) {
-    this._stages.push(new PixelateStage(this._last(), opts));
+  pixelate(opts = {}, id) {
+    const stage = new PixelateStage(this._last(), opts);
+    stage._id = id ?? `${this._id}-pixelate-${this._stages.length}`;
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'pixelate' });
     return this;
   }
 
-  fx(filter) {
-    this._stages.push(new FxStage(this._last(), filter));
+  fx(filter, id) {
+    const stage = new FxStage(this._last(), filter);
+    stage._id = id ?? `${this._id}-fx-${this._stages.length}`;
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'fx' });
     return this;
   }
 
-  glshader(body, opts = {}) {
-    this._stages.push(new GLShaderStage(this._last(), body, opts));
+  glshader(body, opts = {}, id) {
+    const stage = new GLShaderStage(this._last(), body, opts);
+    stage._id = id ?? `${this._id}-glshader-${this._stages.length}`;
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'glshader' });
     return this;
   }
 
-  shader(body, opts = {}) {
-    this._stages.push(new ShaderStage(this._last(), body, opts));
+  shader(body, opts = {}, id) {
+    const stage = new ShaderStage(this._last(), body, opts);
+    stage._id = id ?? `${this._id}-shader-${this._stages.length}`;
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'shader' });
     return this;
   }
 
@@ -537,14 +573,22 @@ export class Pipeline {
    *   })
    *   .show('Custom', { w: 700, h: 500 });
    */
-  use(factory) {
-    this._stages.push(new CustomStage(this._last(), factory));
+  use(factory, id) {
+    const stage = new CustomStage(this._last(), factory);
+    stage._id = id ?? `${this._id}-custom-${this._stages.length}`;
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'custom' });
     return this;
   }
 
   /** Overlay SRT subtitles on the upstream source (video or canvas with .currentTime). */
-  subtitle(srtText, opts = {}) {
-    this._stages.push(new SubtitleStage(this._last(), srtText, opts));
+  subtitle(srtText, opts = {}, id) {
+    const stage = new SubtitleStage(this._last(), srtText, opts);
+    stage._id = id ?? `${this._id}-subtitle-${this._stages.length}`;
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'subtitle' });
     return this;
   }
 
@@ -556,6 +600,7 @@ export class Pipeline {
 
   /** Spawn a wm window and render the pipeline inside it. */
   show(title, opts = {}) {
+    if (opts.id) this._id = opts.id;
     const winId = window.wm?.spawn(title, {
       w: opts.w ?? 700,
       h: opts.h ?? 500,
@@ -572,6 +617,7 @@ export class Pipeline {
         body.style.cssText += ';overflow:hidden;padding:0;margin:0;';
         this._mountInContainer(body);
       }
+      notify('pipe:show', { id: this._id, winId, title });
     }
 
     this.start();
@@ -598,7 +644,8 @@ export class Pipeline {
   }
 
   /** Start pipeline without any display sink (access output via .canvas). */
-  start() {
+  start(opts = {}) {
+    if (opts?.id) this._id = opts.id;
     if (this._rafId || this._starting) return this;
 
     if (this._head._promise) {
@@ -651,6 +698,7 @@ export class Pipeline {
       this._rafId = requestAnimationFrame(loop);
     };
     this._rafId = requestAnimationFrame(loop);
+    notify(`${this._id}:started`, { id: this._id });
     return this;
   }
 
@@ -658,6 +706,7 @@ export class Pipeline {
     this._stopped = true;
     if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     this._live?.release();
+    notify(`${this._id}:stopped`, { id: this._id });
     return this;
   }
 
@@ -686,8 +735,12 @@ export class Pipeline {
   }
 
   _destroy() {
+    notify('pipe:destroy', { id: this._id });
     this.stop();
-    for (const stage of this._stages) stage._destroy();
+    for (const stage of this._stages) {
+      if (stage._id) _stageRegistry.delete(stage._id);
+      stage._destroy();
+    }
     this._stages = [];
     // Only remove displayCanvas if we created it (not an externally provided layer canvas)
     if (this._displayCanvas && this._displayCanvas !== window.getCanvas?.(0)) {
@@ -711,9 +764,14 @@ export class Pipeline {
  *   .ascii({ cols: 80, color: '#00ff41', bg: '#0d0208' })
  *   .show('ASCII Cam', { w: 700, h: 500 });
  */
+let _pipeIdCounter = 0;
+
 export function pipe(source) {
   if (source?._src === 'camera') source = window.Camera?.open();
-  return new Pipeline(new InputAdapter(source));
+  const p = new Pipeline(new InputAdapter(source));
+  p._id = `pipe-${++_pipeIdCounter}`;
+  notify('pipe:create', { id: p._id });
+  return p;
 }
 
 // ── pipe.register — user-extensible named stages ──────────────────────────────
@@ -846,7 +904,27 @@ pipe.register = function(name, factory, descriptor = {}) {
 export function cleanupPipelines() {
   for (const p of _pipelines) p._destroy();
   _pipelines.length = 0;
+  _stageRegistry.clear();
 }
+
+// ── Event bus command handlers ────────────────────────────────────────────────
+registerCommand('pipe:destroy', ({ id }) => {
+  const p = _pipelines.find(p => p._id === id);
+  if (p) p._destroy();
+});
+registerCommand('pipe:stop', ({ id }) => {
+  _pipelines.find(p => p._id === id)?.stop();
+});
+registerCommand('pipe:start', ({ id }) => {
+  _pipelines.find(p => p._id === id)?.start();
+});
+registerCommand('pipe:stage:set', ({ stageId, ...props }) => {
+  _stageRegistry.get(stageId)?.set?.(props);
+});
+registerCommand('pipe:stage:set-uniform', ({ stageId, name, value }) => {
+  const stage = _stageRegistry.get(stageId);
+  stage?._shaderInst?.setUniform?.(name, value);
+});
 
 // Register teardown with the reset registry (ADR 008).
 onReset(cleanupPipelines);

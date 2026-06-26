@@ -32,8 +32,10 @@ This application is not the best of anything. We provide creative tools for peop
 - **Computer vision** — react to hand gestures, facial expressions, and detected objects via [MediaPipe](https://github.com/google-ai-edge/mediapipe); `vision.onGesture()`, `vision.onExpression()`, `vision.face()`
 
 ### Signals & Input
-- **Signal bus** — any live signal (mic level, mouse position, camera brightness, device motion, gamepad axis, MIDI CC, external weather/API) drives any sink (shader uniform, filter cutoff, draw parameter, pattern speed); all signals share the same live-getter + `.stream(fn)` + edge-trigger pattern
-- **Sensors** — unified input bus: `sensors.mouse()`, `sensors.keyboard()`, `sensors.gamepad()`, `sensors.motion()`, `sensors.geo()`, `sensors.network()`, `sensors.battery()`
+- **Reactive event bus** — `on('beat:tick').every(4).do(fn)`, `any('gesture:detected', 'midi:note:on').do(fn)`, `emit('wm:spawn', opts)` — composable subscriptions with `.every()/.after()/.within()/.when()` modifiers; every subsystem emits lifecycle events; editor autocompletes event names
+- **`tick(ms)` + `hold(event)`** — `tick(16).do(() => …)` composable interval; `hold('window:key:down')` live Set of held keys; `hold('window:mouse:move')` live `{x,y}` — one reactive model for everything
+- **Sensors on the bus** — `on('sensor:gamepad')`, `on('sensor:motion')`, `on('sensor:geo')`, `on('sensor:battery')`, `on('sensor:network')`; all lazy (start on first subscriber); haptics via `emit('haptics:vibrate', …)`
+- **WebSerial & GPIO** — `on('gpio:pin')` reads Arduino/ESP32/Pico analog+digital pins; `emit('gpio:write', {pin, value})` drives outputs; custom `parse`/`serialize` for any protocol; port survives resets (Chrome/Edge)
 - **External data** — pull live signals from web APIs and weather with `external.weather(lat, lon)` and `external.signal(url, selector)`
 
 ### Media
@@ -49,6 +51,8 @@ This application is not the best of anything. We provide creative tools for peop
 - **Pixel art** — `Sprite` API for programmatic pixel-grid sprites; `spriteEditor()` or toolbar paintbrush＋ button opens an Aseprite-style paint GUI with pencil/eraser/fill/eyedropper/line/rect tools, multi-frame timeline, onion skinning, and ⤓ Code / ⤓ PNG / ⤓ Sheet export; `sp.edit()` on any existing sprite opens the GUI on it. **Event/signal API**: `sp.onPixel(fn)`, `sp.onStroke(fn)`, `sp.signal('pixel', {decay,region})` — drive audio/shader params from brush activity
 - **Paint canvas** — `paint()` or toolbar 🖌️ button opens a freehand doodle canvas; tools: pen (smooth quadratic strokes), eraser, line, rect, ellipse, fill, eyedropper; adjustable brush size (1–64px), background color, multi-frame animation with onion skinning, undo/redo (Cmd+Z), autosave to desktop icon, ⤓ Code / ⤓ PNG / ⤓ Sheet export. **Backdrop support**: pass `backdrop:'url'` or click 🖼 in the toolbar to load an image or video as a reference layer beneath strokes; 📷 Freeze frame bakes a live video frame to static for tracing; export composites backdrop + drawing. **Event/signal API**: `p.onStroke(fn)`, `p.signal('stroke', {decay,region})` — spatially-scoped decaying signals react to where on the canvas you draw
 - **In-window paint overlay** — every image, video, camera, canvas, and shader window has a 🖌️ titlebar toggle that activates a drawing canvas over the live content with a compact pen/eraser/color/size/clear/snapshot toolbar; 📷 Snapshot composites the visual frame + drawing into a PNG desktop icon. **Event/signal API**: `wm.onStroke(winId, fn)`, `wm.paintSignal(winId, 'stroke', {decay})` — draw over a live camera feed and drive shader parameters from your strokes
+- **Capture & Record** — take a still photo or record video from the webcam (`cam.photo()`, `cam.record()`); record any canvas/shader/camera output window to a WebM (`wm.record(winId)`); snapshot any window to a PNG (`wm.snapshot(winId)`); captures land as persistent desktop icons (IndexedDB-backed, survive reload) with optional immediate download; 📷/🔴 titlebar buttons on all visual windows
+- **Notepad** — `notepad()` / `new Notepad({ title, w, h })` opens a rich-text window widget (serif font, light background, formatting toolbar). Fully programmable: `note.cursor(pos)`, `note.select(from, to)`, `note.insert/delete/replace`, `note.color/highlight/bold/italic`. Animated fake-typing via `await note.type('text', { cps:15 })` and `note.backspace(n)`; fires `note:char` per character for reactive audio/visuals. Content autosaves to a `.note` desktop icon.
 - **ASCII art editor** — `asciiEditor()` or toolbar terminal＋ button opens an interactive colored ASCII art editor (asciistudio.app-style); per-cell foreground + background color; tools: type (keyboard entry with caret), brush, eraser, flood fill, eyedropper, line, rect; character palette (`░▒▓█▀▄■`…) + custom glyph input; animation frames with onion skinning, undo/redo (Cmd+Z), autosave to desktop icon; export as runnable `ascii.play([...])` code snippet (with full color), plain text, or ANSI escape-coded text. **Event/signal API**: `ae.onCell(fn)`, `ae.signal('cell', {decay, region:{x,y,w,h}})` — cell coordinates for region-scoped triggers
 
 ## Editor features
@@ -214,30 +218,29 @@ const face = vision.face(); // { expression, cx, cy, landmarks }
 ### Signals & Input
 
 ```js
-// Sensors — unified signal bus
-const mouse = sensors.mouse();
-mouse.stream(m => draw.circle(m.x * 1600, m.y * 900, 10, 'white'));
-mouse.onMove(0.01, () => console.log('moving'));
+// Keyboard & mouse — all on the event bus
+on('window:key:down').when({ w: () => y -= 5, s: () => y += 5, a: () => x -= 5, d: () => x += 5 });
 
-const kb = sensors.keyboard();
-kb.onKey('ArrowLeft', () => x -= 10);
-setInterval(() => { if (kb.is('w')) y -= 5; }, 16);
+const keys  = hold('window:key:down');   // live Set of held keys
+const mouse = hold('window:mouse:move'); // live { x, y }
 
-const pad = sensors.gamepad();
-pad.stream(g => {
-  const x = g.axis(0);    // left stick x -1..1
-  const fire = g.pressed(0); // A button
+tick(16).do(() => {
+  draw.circle(mouse.x, mouse.y, 10, 'white');
+  if (keys.has('ArrowLeft')) x -= 5;
 });
 
-const motion = sensors.motion();
-motion.onShake(20, () => draw.clear());
-motion.stream(m => console.log(m.magnitude));
+// Device sensors — lazy bus events (start on first subscriber, stop on last)
+on('sensor:gamepad').do(({ axes, pressed }) => {
+  // axes[0] = left stick x, axes[1] = left stick y
+  // pressed[0] = A/Cross button
+});
 
-const geo = sensors.geo();
-geo.stream(g => draw.text(`${g.lat?.toFixed(4)}, ${g.lon?.toFixed(4)}`, 50, 50));
+on('sensor:motion').do(({ magnitude, gamma, beta }) => console.log(magnitude));
+on('sensor:shake').when(d => d.magnitude > 20).do(() => draw.clear());
 
-const bat = await sensors.battery();
-console.log(bat.level, bat.charging);
+on('sensor:geo').do(g => draw.text(`${g.lat?.toFixed(4)}, ${g.lon?.toFixed(4)}`, 50, 50));
+
+on('sensor:battery').do(({ level, charging }) => console.log(level, charging));
 
 // Video signals — sample canvas/camera region as live numeric signals
 const sig = video.signal('camera', { x: 0.5, y: 0.5, radius: 0.1 });

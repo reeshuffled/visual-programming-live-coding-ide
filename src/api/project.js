@@ -115,7 +115,7 @@ export function serializeProject(wm, instances) {
       cameraOn: !!window.__ar_camera_on,
     },
     windows,
-    desktop: serializeDesktop(),
+    desktop: serializeDesktop({ forProject: true }),
   };
 }
 

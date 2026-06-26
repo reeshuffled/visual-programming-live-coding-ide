@@ -6,6 +6,8 @@
 import * as Tone from 'tone';
 import { WidgetEvents } from './widget-events.js';
 import { onReset } from '../runtime/reset-registry.js';
+import { notify, registerCommand } from '../events/index.js';
+import { recordStream, compositeCanvasStream } from './recorder.js';
 
 // ── Paint-overlay WidgetEvents registry (for cleanupPaintOverlays) ────────────
 
@@ -207,6 +209,11 @@ async function _deleteWinHandle(winId) {
     db.close();
   } catch (_) {}
 }
+
+// Focused window id — set when any window comes to front (bringToFront choke point).
+// Used by input.js to tag key events with the focused window.
+let _focusedWinId = null;
+export function getFocusedWinId() { return _focusedWinId; }
 
 export function initWM(onContentResize) {
   const desktop = document.getElementById('desktop');
@@ -481,6 +488,111 @@ export function initWM(onContentResize) {
   // no frames, no undo, no onion skin.  Snapshot composites the live visual
   // frame + overlay into a PNG desktop icon; "Edit in Paint" opens the full
   // Paint editor with that composite as a backdrop.
+  // ── Snapshot visual to persistent desktop PNG ──────────────────────────────
+  function _snapshotVisual(win, body, visualEl, { name, download = false } = {}) {
+    const overlay = win._getOverlay?.();
+    // Composite all non-overlay canvases (multi-layer output windows)
+    const canvases = [...body.querySelectorAll('canvas')].filter(c => c !== overlay);
+    let w, h;
+    if (canvases.length > 0) {
+      w = canvases[0].width || 320;
+      h = canvases[0].height || 240;
+    } else {
+      w = visualEl.videoWidth || visualEl.naturalWidth || visualEl.width || 320;
+      h = visualEl.videoHeight || visualEl.naturalHeight || visualEl.height || 240;
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    if (canvases.length > 0) {
+      for (const src of canvases) { try { ctx.drawImage(src, 0, 0, w, h); } catch (_) {} }
+    } else {
+      try { ctx.drawImage(visualEl, 0, 0, w, h); } catch (_) {}
+    }
+    if (overlay) { try { ctx.drawImage(overlay, 0, 0, w, h); } catch (_) {} }
+    const snapName = name ?? (win.querySelector('.wm-title')?.textContent?.trim() || 'snapshot') + '.png';
+    c.toBlob(blob => {
+      if (!blob) return;
+      window.desktop?.addBlob(blob, { name: snapName, type: 'image', download });
+    }, 'image/png');
+  }
+
+  // ── Start recording a visual window → desktop WebM ─────────────────────────
+  function _recordVisual(win, body, visualEl, { fps = 30, name } = {}) {
+    const overlay = win._getOverlay?.();
+    const canvases = [...body.querySelectorAll('canvas')].filter(c => c !== overlay);
+    let stream, stopCompositor = null;
+    if (canvases.length > 1) {
+      const comp = compositeCanvasStream(canvases, fps);
+      stream = comp.stream;
+      stopCompositor = comp.stop;
+    } else if (canvases.length === 1) {
+      stream = canvases[0].captureStream?.(fps);
+    } else if (visualEl?.tagName === 'VIDEO') {
+      stream = visualEl.captureStream?.() ?? visualEl.mozCaptureStream?.();
+    }
+    if (!stream) return null;
+    const recName = name ?? (win.querySelector('.wm-title')?.textContent?.trim() || 'recording') + '.webm';
+    const rec = recordStream(stream, {
+      onStop: blob => window.desktop?.addBlob(blob, { name: recName, type: 'video' }),
+    });
+    if (stopCompositor) rec._stopCompositor = stopCompositor;
+    return rec;
+  }
+
+  // ── Add 📷 / 🔴 capture buttons to a visual window's titlebar ──────────────
+  function _addCaptureButtons(win, body, visualEl) {
+    const tb = win.querySelector('.wm-titlebar');
+    if (!tb) return;
+    const mkBtn = (html, title, fn) => {
+      const b = document.createElement('span');
+      b.className = 'wm-btn';
+      b.title = title;
+      b.innerHTML = html;
+      b.addEventListener('click', fn);
+      return b;
+    };
+    let activeRec = null;
+    const isStatic = visualEl?.tagName === 'IMG';
+    let recBtn;
+    if (!isStatic) {
+      recBtn = mkBtn('<i class="fa-solid fa-circle" style="color:#f38ba8"></i>', 'Record → desktop WebM', () => {
+        if (activeRec) {
+          activeRec.stop(); activeRec = null;
+          recBtn.innerHTML = '<i class="fa-solid fa-circle" style="color:#f38ba8"></i>'; recBtn.title = 'Record → desktop WebM';
+        } else {
+          activeRec = _recordVisual(win, body, visualEl);
+          if (activeRec) { recBtn.innerHTML = '<i class="fa-solid fa-stop"></i>'; recBtn.title = 'Stop recording'; }
+        }
+      });
+    }
+    const photoBtn = mkBtn('<i class="fa-solid fa-camera"></i>', 'Snapshot → desktop PNG', () => _snapshotVisual(win, body, visualEl));
+    const firstBtn = tb.querySelector('.wm-btn');
+    if (recBtn) tb.insertBefore(recBtn, firstBtn);
+    tb.insertBefore(photoBtn, recBtn ?? firstBtn);
+    // Stop any in-flight recording when window closes
+    const prevCleanup = win._wmCleanup;
+    win._wmCleanup = (...args) => {
+      if (activeRec) { activeRec.stop(); activeRec = null; }
+      if (typeof prevCleanup === 'function') prevCleanup(...args);
+    };
+    // Public wm.snapshot/record/stopRecording hooks
+    win._wmSnapshot = (opts) => _snapshotVisual(win, body, visualEl, opts);
+    win._wmRecord = (opts) => {
+      if (!activeRec) {
+        activeRec = _recordVisual(win, body, visualEl, opts);
+        if (activeRec && recBtn) { recBtn.innerHTML = '<i class="fa-solid fa-stop"></i>'; recBtn.title = 'Stop recording'; }
+      }
+      return activeRec;
+    };
+    win._wmStopRecording = () => {
+      if (activeRec) {
+        activeRec.stop(); activeRec = null;
+        if (recBtn) { recBtn.innerHTML = '<i class="fa-solid fa-circle" style="color:#f38ba8"></i>'; recBtn.title = 'Record → desktop WebM'; }
+      }
+    };
+  }
+
   //
   // `visualEl` — the <img>, <video>, or <canvas> element inside the window body.
   // The overlay is sized and stacked to cover it exactly.
@@ -493,7 +605,7 @@ export function initWM(onContentResize) {
     let drawing   = false;
     let lastX     = 0, lastY  = 0;
     let prevX     = null, prevY = null;
-    let tool      = 'pen';  // 'pen' | 'eraser'
+    let tool      = 'pen';  // 'pen' | 'eraser' | 'text'
     let color     = '#ff0000';
     let brushSize = 6;
 
@@ -503,7 +615,7 @@ export function initWM(onContentResize) {
     _overlayEvents.add(events);
 
     // stroke bbox tracking
-    let _bbox = null; // { minX, minY, maxX, maxY }
+    let _bbox = null;
     const _bboxExpand = (x, y) => {
       if (!_bbox) { _bbox = { minX: x, minY: y, maxX: x, maxY: y }; return; }
       if (x < _bbox.minX) _bbox.minX = x;
@@ -516,14 +628,75 @@ export function initWM(onContentResize) {
     let overlay  = null;
     let miniBar  = null;
     let colorIn  = null;
+    win._getOverlay = () => overlay;
+
+    // ── Undo / Redo ───────────────────────────────────────────────────────────
+    let _undoStack = [];
+    let _undoPos   = -1;
+    let _updateHistBtns = null;
+
+    const _histPush = () => {
+      if (!overlay) return;
+      const snap = overlay.getContext('2d').getImageData(0, 0, overlay.width, overlay.height);
+      _undoStack = _undoStack.slice(0, _undoPos + 1);
+      _undoStack.push(snap);
+      _undoPos = _undoStack.length - 1;
+      _updateHistBtns?.();
+    };
+
+    const _histUndo = () => {
+      if (!overlay || _undoPos <= 0) return;
+      _undoPos--;
+      const ctx = overlay.getContext('2d');
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.putImageData(_undoStack[_undoPos], 0, 0);
+      _updateHistBtns?.();
+    };
+
+    const _histRedo = () => {
+      if (!overlay || _undoPos >= _undoStack.length - 1) return;
+      _undoPos++;
+      overlay.getContext('2d').putImageData(_undoStack[_undoPos], 0, 0);
+      _updateHistBtns?.();
+    };
+
+    const _onKey = (e) => {
+      if (!overlay) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key === 'z' && !e.shiftKey)                        { e.preventDefault(); _histUndo(); }
+      else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') { e.preventDefault(); _histRedo(); }
+    };
+
+    // ── Cursor ────────────────────────────────────────────────────────────────
+    const _makeCursor = () => {
+      if (tool === 'text') return 'text';
+      const r = Math.max(2, brushSize / 2);
+      const d = Math.ceil(r * 2 + 4);
+      const c = d / 2;
+      const stroke = tool === 'eraser' ? 'rgba(255,120,120,0.9)' : 'rgba(255,255,255,0.85)';
+      const dash   = tool === 'eraser' ? 'stroke-dasharray="3 2"' : '';
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${d}" height="${d}"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${stroke}" stroke-width="1.5" ${dash}/></svg>`;
+      return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${c} ${c}, crosshair`;
+    };
+
+    const _updateCursor = () => { if (overlay) overlay.style.cursor = _makeCursor(); };
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     const getVisualRect = () => {
-      // Get visual element bounding rect relative to the window body
       const vr = visualEl.getBoundingClientRect();
       const br = body.getBoundingClientRect();
       return { left: vr.left - br.left, top: vr.top - br.top, w: vr.width, h: vr.height };
+    };
+
+    const getPos = (e) => {
+      if (!overlay) return { x: 0, y: 0 };
+      const rect = overlay.getBoundingClientRect();
+      return {
+        x: (e.clientX - rect.left) * (overlay.width  / rect.width),
+        y: (e.clientY - rect.top)  * (overlay.height / rect.height),
+      };
     };
 
     const buildOverlay = () => {
@@ -538,7 +711,7 @@ export function initWM(onContentResize) {
         top:  r.top  + 'px',
         width:  r.w + 'px',
         height: r.h + 'px',
-        cursor: 'crosshair',
+        cursor: _makeCursor(),
         pointerEvents: 'auto',
         zIndex: '50',
         touchAction: 'none',
@@ -546,10 +719,15 @@ export function initWM(onContentResize) {
       body.style.position = 'relative';
       body.appendChild(overlay);
 
+      _undoStack = [overlay.getContext('2d').getImageData(0, 0, overlay.width, overlay.height)];
+      _undoPos = 0;
+      _updateHistBtns?.();
+
       overlay.addEventListener('pointerdown',  onDown);
       overlay.addEventListener('pointermove',  onMove);
       overlay.addEventListener('pointerup',    onUp);
       overlay.addEventListener('pointerleave', onUp);
+      document.addEventListener('keydown', _onKey);
     };
 
     const removeOverlay = () => {
@@ -560,6 +738,7 @@ export function initWM(onContentResize) {
       overlay.removeEventListener('pointerleave', onUp);
       overlay.remove();
       overlay = null;
+      document.removeEventListener('keydown', _onKey);
     };
 
     const buildMiniBar = () => {
@@ -583,73 +762,137 @@ export function initWM(onContentResize) {
         return b;
       };
 
-      // Pen/eraser toggle
-      const penBtn    = mkBtn('✏️', 'Pen',    () => {
-        const prev = tool; tool = 'pen';
-        penBtn.style.borderColor = '#cba6f7'; eraserBtn.style.borderColor = '#45475a';
-        events.emit('tool', { tool, prev, winId: win.id });
-      });
-      const eraserBtn = mkBtn('⌫', 'Eraser', () => {
-        const prev = tool; tool = 'eraser';
-        eraserBtn.style.borderColor = '#cba6f7'; penBtn.style.borderColor = '#45475a';
-        events.emit('tool', { tool, prev, winId: win.id });
-      });
-      penBtn.style.borderColor = '#cba6f7';  // pen active by default
+      // Tool buttons
+      let penBtn, eraserBtn, textBtn;
+      const _setTool = (t) => {
+        tool = t;
+        penBtn.style.borderColor    = t === 'pen'    ? '#cba6f7' : '#45475a';
+        eraserBtn.style.borderColor = t === 'eraser' ? '#cba6f7' : '#45475a';
+        textBtn.style.borderColor   = t === 'text'   ? '#cba6f7' : '#45475a';
+        _updateCursor();
+        events.emit('tool', { tool: t, winId: win.id });
+      };
+      penBtn    = mkBtn('<i class="fa-solid fa-pen"></i>',    'Pen (P)',    () => _setTool('pen'));
+      eraserBtn = mkBtn('<i class="fa-solid fa-eraser"></i>', 'Eraser (E)', () => _setTool('eraser'));
+      textBtn   = mkBtn('T', 'Text (T)', () => _setTool('text'));
+      penBtn.style.borderColor = '#cba6f7';
 
-      // Color picker
+      // Color picker — hidden native input + visible swatch
       colorIn = document.createElement('input');
       colorIn.type  = 'color';
       colorIn.value = color;
-      colorIn.title = 'Stroke color';
-      colorIn.style.cssText = 'width:24px;height:24px;border:none;border-radius:3px;cursor:pointer;padding:0;background:none;flex-shrink:0;';
+      colorIn.style.cssText = 'position:absolute;width:0;height:0;opacity:0;pointer-events:none;';
+
+      let _pickerOpen = false;
+      const colorSwatch = document.createElement('div');
+      colorSwatch.title = 'Stroke color';
+      colorSwatch.style.cssText = `width:22px;height:22px;border-radius:4px;cursor:pointer;border:2px solid #45475a;background:${color};flex-shrink:0;`;
+      colorSwatch.addEventListener('click', () => {
+        if (_pickerOpen) { colorIn.blur(); _pickerOpen = false; }
+        else             { colorIn.click(); _pickerOpen = true;  }
+      });
       colorIn.addEventListener('input', () => {
         const prev = color; color = colorIn.value;
+        colorSwatch.style.background = color;
         events.emit('color', { color, prev, winId: win.id });
       });
+      colorIn.addEventListener('change', () => { _pickerOpen = false; });
+      colorIn.addEventListener('blur',   () => { _pickerOpen = false; });
 
       // Brush size
       const sizeSlider = document.createElement('input');
       sizeSlider.type  = 'range'; sizeSlider.min = '1'; sizeSlider.max = '48'; sizeSlider.value = String(brushSize);
       sizeSlider.title = 'Brush size';
       sizeSlider.style.cssText = 'width:55px;accent-color:#cba6f7;flex-shrink:0;';
-      sizeSlider.addEventListener('input', () => { brushSize = parseInt(sizeSlider.value, 10); });
+      sizeSlider.addEventListener('input', () => { brushSize = parseInt(sizeSlider.value, 10); _updateCursor(); });
+
+      // Undo / Redo
+      let undoBtn, redoBtn;
+      _updateHistBtns = () => {
+        if (undoBtn) undoBtn.style.opacity = _undoPos > 0                     ? '1' : '0.35';
+        if (redoBtn) redoBtn.style.opacity = _undoPos < _undoStack.length - 1 ? '1' : '0.35';
+      };
+      undoBtn = mkBtn('<i class="fa-solid fa-rotate-left"></i>',  'Undo (⌘Z)',   _histUndo);
+      redoBtn = mkBtn('<i class="fa-solid fa-rotate-right"></i>', 'Redo (⌘⇧Z)', _histRedo);
+      _updateHistBtns();
 
       // Clear
-      const clearBtn = mkBtn('🗑', 'Clear drawing', () => {
+      const clearBtn = mkBtn('<i class="fa-solid fa-trash"></i>', 'Clear drawing', () => {
         if (!overlay) return;
         overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
+        _histPush();
         events.emit('clear', { winId: win.id });
       });
 
       // Snapshot
-      const snapBtn = mkBtn('📷 Snapshot', 'Composite visual + drawing → PNG on desktop', () => _doSnapshot());
+      const snapBtn = mkBtn('<i class="fa-solid fa-camera"></i> Snap', 'Composite visual + drawing → PNG on desktop', () => _doSnapshot());
 
       miniBar.appendChild(penBtn);
       miniBar.appendChild(eraserBtn);
+      miniBar.appendChild(textBtn);
       miniBar.appendChild(colorIn);
+      miniBar.appendChild(colorSwatch);
       miniBar.appendChild(sizeSlider);
+      miniBar.appendChild(undoBtn);
+      miniBar.appendChild(redoBtn);
       miniBar.appendChild(clearBtn);
       miniBar.appendChild(snapBtn);
 
       body.appendChild(miniBar);
     };
 
-    const removeMiniBar = () => { miniBar?.remove(); miniBar = null; };
+    const removeMiniBar = () => { miniBar?.remove(); miniBar = null; _updateHistBtns = null; };
+
+    // ── Text tool ─────────────────────────────────────────────────────────────
+
+    const _spawnTextInput = (e) => {
+      const bodyRect  = body.getBoundingClientRect();
+      const { x, y } = getPos(e);
+      const fontSize  = Math.max(12, brushSize * 2);
+
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.style.cssText = [
+        'position:absolute;',
+        `left:${e.clientX - bodyRect.left}px;`,
+        `top:${e.clientY - bodyRect.top}px;`,
+        'transform:translateY(-50%);',
+        'background:transparent;border:none;border-bottom:1px dashed rgba(255,255,255,0.45);',
+        `color:${color};font-size:${fontSize}px;`,
+        'outline:none;min-width:60px;z-index:52;padding:0 2px;',
+      ].join('');
+      body.appendChild(inp);
+      inp.focus();
+
+      let _committed = false;
+      const commit = () => {
+        if (_committed) return;
+        _committed = true;
+        const text = inp.value.trim();
+        inp.remove();
+        if (!text || !overlay) return;
+        const ctx = overlay.getContext('2d');
+        ctx.save();
+        ctx.font = `${fontSize}px sans-serif`;
+        ctx.fillStyle = color;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillText(text, x, y);
+        ctx.restore();
+        _histPush();
+        events.emit('stroke', { tool: 'text', color, winId: win.id, bbox: null });
+      };
+
+      inp.addEventListener('blur', commit);
+      inp.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter')  { ev.preventDefault(); inp.blur(); }
+        if (ev.key === 'Escape') { _committed = true; inp.remove(); }
+      });
+    };
 
     // ── Drawing ──────────────────────────────────────────────────────────────
 
-    const getPos = (e) => {
-      if (!overlay) return { x: 0, y: 0 };
-      const rect = overlay.getBoundingClientRect();
-      const sx = overlay.width  / rect.width;
-      const sy = overlay.height / rect.height;
-      return {
-        x: (e.clientX - rect.left) * sx,
-        y: (e.clientY - rect.top)  * sy,
-      };
-    };
-
     const onDown = (e) => {
+      if (tool === 'text') { _spawnTextInput(e); return; }
       e.preventDefault();
       overlay.setPointerCapture(e.pointerId);
       drawing = true;
@@ -699,6 +942,7 @@ export function initWM(onContentResize) {
     const onUp = () => {
       if (!drawing) return;
       drawing = false; prevX = null; prevY = null;
+      _histPush();
       if (_bbox) {
         events.emit('stroke', {
           tool, color, winId: win.id,
@@ -710,23 +954,7 @@ export function initWM(onContentResize) {
 
     // ── Snapshot ─────────────────────────────────────────────────────────────
 
-    const _doSnapshot = () => {
-      // Composite visual (current frame) + overlay into one canvas
-      const vr = getVisualRect();
-      const w = Math.round(vr.w) || 320;
-      const h = Math.round(vr.h) || 240;
-      const c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      const ctx = c.getContext('2d');
-      try { ctx.drawImage(visualEl, 0, 0, w, h); } catch (_) {}
-      if (overlay) ctx.drawImage(overlay, 0, 0, w, h);
-      c.toBlob(blob => {
-        if (!blob) return;
-        const url  = URL.createObjectURL(blob);
-        const name = (win.querySelector('.wm-title')?.textContent?.trim() || 'snapshot') + '.png';
-        window.desktop?.add(url, { name, type: 'image' });
-      }, 'image/png');
-    };
+    const _doSnapshot = () => _snapshotVisual(win, body, visualEl);
 
     // ── Toggle ────────────────────────────────────────────────────────────────
 
@@ -930,6 +1158,12 @@ export function initWM(onContentResize) {
 
   function bringToFront(win) {
     win.style.zIndex = String(zTop++);
+    if (win.id && win.id !== _focusedWinId) {
+      const prev = _focusedWinId;
+      _focusedWinId = win.id;
+      if (prev) notify('wm:blur',  { id: prev });
+      notify('wm:focus', { id: win.id });
+    }
   }
 
   // Drag via titlebar, hover-strip, or body of content-only windows
@@ -959,7 +1193,10 @@ export function initWM(onContentResize) {
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      if (_moved) _pushSnapshot(preSnap);
+      if (_moved) {
+        _pushSnapshot(preSnap);
+        notify('wm:move', { id: win.id, x: win.offsetLeft, y: win.offsetTop });
+      }
       onContentResize?.();
       _saveState();
     };
@@ -999,7 +1236,10 @@ export function initWM(onContentResize) {
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      if (_resized) _pushSnapshot(preSnap);
+      if (_resized) {
+        _pushSnapshot(preSnap);
+        notify('wm:resize', { id: win.id, w: win.offsetWidth, h: win.offsetHeight });
+      }
       onContentResize?.();
       _saveState();
     };
@@ -1056,10 +1296,20 @@ export function initWM(onContentResize) {
       _deleteWinHandle(win.id);
       spawnedIds.delete(win.id);
       const _onClose = win._wmUserOnClose;
+      const _closedTitle = win.querySelector('.wm-title')?.textContent?.trim() ?? '';
+      const _closedType  = win._wmSpawnOpts?.type ?? 'unknown';
+      const _closedId    = win.id;
+      // If this window was focused, blur it before removal.
+      if (_closedId === _focusedWinId) { _focusedWinId = null; notify('wm:blur', { id: _closedId }); }
       win.classList.add('wm-closing');
-      win.addEventListener('animationend', () => { win.remove(); _onClose?.(); }, { once: true });
+      win.addEventListener('animationend', () => {
+        win.remove();
+        _onClose?.();
+        notify('wm:close', { id: _closedId, title: _closedTitle, type: _closedType });
+      }, { once: true });
     } else {
       win.style.display = 'none';
+      notify('wm:hide', { id: win.id });
     }
     _saveState();
   });
@@ -1757,13 +2007,24 @@ export function initWM(onContentResize) {
     rafId = requestAnimationFrame(draw);
     win._wmCleanup = () => cancelAnimationFrame(rafId);
 
-    // For battery: cache latest reading for the RAF draw loop
-    if (source === 'battery' && window.sensors?.battery) {
-      window.sensors.battery().then(bat => {
-        window.__ar_battery_last = { level: bat.level, charging: bat.charging, timeToFull: bat.timeToFull, timeToEmpty: bat.timeToEmpty };
-        bat.onChange(() => {
-          window.__ar_battery_last = { level: bat.level, charging: bat.charging, timeToFull: bat.timeToFull, timeToEmpty: bat.timeToEmpty };
-        });
+    // For battery: subscribe to bus event to cache latest reading for the RAF draw loop
+    if (source === 'battery') {
+      if (!navigator.getBattery) return;
+      navigator.getBattery().then(b => {
+        const update = () => {
+          window.__ar_battery_last = { level: b.level, charging: b.charging,
+            timeToFull: b.chargingTime, timeToEmpty: b.dischargingTime };
+        };
+        update();
+        b.addEventListener('levelchange',    update);
+        b.addEventListener('chargingchange', update);
+        // Cleanup on window close
+        const prevCleanup = win._wmCleanup;
+        win._wmCleanup = () => {
+          prevCleanup?.();
+          b.removeEventListener('levelchange',    update);
+          b.removeEventListener('chargingchange', update);
+        };
       }).catch(() => {});
     }
   }
@@ -1777,6 +2038,7 @@ export function initWM(onContentResize) {
       if (!win) return api;
       win.style.display = 'flex';
       bringToFront(win);
+      notify('wm:show', { id });
       return api;
     },
 
@@ -1784,13 +2046,17 @@ export function initWM(onContentResize) {
     hide(id) {
       const win = getWin(id);
       if (!win) return api;
+      const _title = win.querySelector('.wm-title')?.textContent?.trim() ?? '';
+      const _type  = win._wmSpawnOpts?.type ?? 'unknown';
       if (spawnedIds.has(id)) {
         _releaseWin(win);
         win._wmCleanup?.();
         win.remove();
         spawnedIds.delete(id);
+        notify('wm:close', { id, title: _title, type: _type });
       } else {
         win.style.display = 'none';
+        notify('wm:hide', { id });
       }
       _saveState();
       return api;
@@ -1879,7 +2145,7 @@ export function initWM(onContentResize) {
     /** Bring window to front */
     focus(id) {
       const win = getWin(id);
-      if (win) bringToFront(win);
+      if (win) bringToFront(win); // bringToFront emits wm:focus (and wm:blur for previous)
       return api;
     },
 
@@ -1889,6 +2155,7 @@ export function initWM(onContentResize) {
       if (!win) return api;
       win.style.left = `${x}px`;
       win.style.top  = `${y}px`;
+      notify('wm:move', { id, x, y });
       return api;
     },
 
@@ -1896,9 +2163,11 @@ export function initWM(onContentResize) {
     resize(id, w, h) {
       const win = getWin(id);
       if (!win) return api;
-      win.style.width  = `${Math.max(180, w)}px`;
-      win.style.height = `${Math.max(80,  h)}px`;
+      const rw = Math.max(180, w), rh = Math.max(80, h);
+      win.style.width  = `${rw}px`;
+      win.style.height = `${rh}px`;
       onContentResize?.();
+      notify('wm:resize', { id, w: rw, h: rh });
       return api;
     },
 
@@ -1908,6 +2177,7 @@ export function initWM(onContentResize) {
       if (!win || win.classList.contains('wm-maximized')) return api;
       _toggleMaximize(win);
       onContentResize?.();
+      notify('wm:maximize', { id });
       return api;
     },
 
@@ -1917,6 +2187,7 @@ export function initWM(onContentResize) {
       if (!win || !win.classList.contains('wm-maximized')) return api;
       _toggleMaximize(win);
       onContentResize?.();
+      notify('wm:restore', { id });
       return api;
     },
 
@@ -2148,9 +2419,10 @@ export function initWM(onContentResize) {
                             ? (body.querySelector('canvas') || body) :
           body; // html — body is the output visual, flip it whole
         _addFlipBtns(win, _flipVisual);
-        // Paint overlay — available on visual windows only (not viz/sensor/html)
+        // Paint overlay + capture buttons — available on visual windows only (not viz/sensor/html)
         if (['image','video','camera','canvas','shader'].includes(type)) {
           _addPaintOverlay(win, body, _flipVisual);
+          _addCaptureButtons(win, body, _flipVisual);
         }
       }
       if (opts.noChrome)    win.classList.add('wm-no-chrome');
@@ -2177,6 +2449,7 @@ export function initWM(onContentResize) {
       }
 
       _saveState();
+      notify('wm:spawn', { id, title, type, x: parseInt(win.style.left), y: parseInt(win.style.top), w, h });
       return id;
     },
 
@@ -2372,6 +2645,21 @@ export function initWM(onContentResize) {
       _addAudioControls(win, null);
     },
 
+    /** Snapshot a visual window → persistent PNG on the desktop */
+    snapshot(winId, opts = {}) {
+      document.getElementById(winId)?._wmSnapshot?.(opts);
+    },
+
+    /** Start recording a visual window → desktop WebM. Returns the Recording or null. */
+    record(winId, opts = {}) {
+      return document.getElementById(winId)?._wmRecord?.(opts) ?? null;
+    },
+
+    /** Stop an in-progress recording on a window. */
+    stopRecording(winId) {
+      document.getElementById(winId)?._wmStopRecording?.();
+    },
+
     /** Return the IndexedDB key for a file-backed window (key = winId) */
     fileKey(id) { return fileHandles.has(id) ? id : null; },
 
@@ -2539,6 +2827,22 @@ export function initWM(onContentResize) {
   };
 
   _updateHistoryBtns(); // init state — both disabled on load
+
+  // ── Event bus command handlers ─────────────────────────────────────────────
+  // Each handler performs the action by calling the public API method (which fires
+  // the notify() inside it) and returns the result payload. The bus does NOT fire
+  // again because notify() bypasses the command handler path.
+  // Methods call notify() internally, so command handlers are thin wrappers.
+  registerCommand('wm:spawn',    (opts)         => { api.spawn(opts.title ?? 'Window', opts); });
+  registerCommand('wm:close',    ({ id })        => { api.close(id); });
+  registerCommand('wm:hide',     ({ id })        => { api.hide(id); });
+  registerCommand('wm:show',     ({ id })        => { api.show(id); });
+  registerCommand('wm:focus',    ({ id })        => { api.focus(id); });
+  registerCommand('wm:move',     ({ id, x, y })  => { api.move(id, x, y); });
+  registerCommand('wm:resize',   ({ id, w, h })  => { api.resize(id, w, h); });
+  registerCommand('wm:maximize', ({ id })        => { api.maximize(id); });
+  registerCommand('wm:restore',  ({ id })        => { api.restore(id); });
+
   return api;
 }
 

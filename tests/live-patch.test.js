@@ -1,4 +1,5 @@
-import { friendlyError, addInfiniteLoopProtection, extractScriptLine } from '../src/editor/live-patch.js';
+import { friendlyError, addInfiniteLoopProtection, extractScriptLine, transformCode, makeLoopProtectionVisitor, makeTraceVisitor } from '../src/editor/live-patch.js';
+import esprima from 'esprima';
 
 // ── friendlyError ────────────────────────────────────────────────────────────
 
@@ -90,6 +91,59 @@ describe('addInfiniteLoopProtection', () => {
     const result = addInfiniteLoopProtection(code);
     expect(result).toContain('_wmloopvar1');
     expect(result).toContain('_wmloopvar2');
+  });
+});
+
+// ── transformCode + makeLoopProtectionVisitor ─────────────────────────────────
+
+describe('transformCode', () => {
+  test('addInfiniteLoopProtection wrapper still works (regression)', () => {
+    const code = `for (let i = 0; i < 10; i++) { x(); }`;
+    const result = addInfiniteLoopProtection(code);
+    expect(result).toContain('Date.now()');
+    expect(result).toContain('window.stopRunning()');
+  });
+
+  test('transformCode with no visitors returns original code', () => {
+    const code = `const x = 1;`;
+    expect(transformCode(code, [])).toBe(code);
+  });
+
+  test('transformCode with loopProtectionVisitor injects guard', () => {
+    const code = `while (true) { doIt(); }`;
+    const result = transformCode(code, [makeLoopProtectionVisitor()]);
+    expect(result).toContain('Date.now()');
+  });
+
+  test('makeTraceVisitor injects __ar_e{id}_trace at correct line', () => {
+    const code = `const x = 1;\nconst y = 2;`;
+    const result = transformCode(code, [makeTraceVisitor(42)]);
+    expect(result).toContain('window.__ar_e42_trace(1)');
+    expect(result).toContain('window.__ar_e42_trace(2)');
+  });
+
+  test('combined loop + trace produces valid parseable output', async () => {
+    const code = `for (let i = 0; i < 3; i++) { draw(i); }`;
+    const result = transformCode(code, [makeLoopProtectionVisitor(), makeTraceVisitor(1)]);
+    expect(result).toContain('Date.now()');
+    expect(result).toContain('window.__ar_e1_trace(1)');
+    // Must still be parseable JS
+    expect(() => esprima.parseScript(result, { tolerant: true })).not.toThrow();
+  });
+
+  test('visitors run in registration order (trace before loop guard at same pos)', () => {
+    const code = `for (let i=0;i<3;i++){x();}`;
+    const result = transformCode(code, [makeLoopProtectionVisitor(), makeTraceVisitor(1)]);
+    // Both should be present
+    expect(result).toContain('_wmloopvar');
+    expect(result).toContain('__ar_e1_trace');
+  });
+
+  test('traceVisitor injects inside arrow callback bodies', () => {
+    const code = `tick(() => {\n  draw.rect(0, 0);\n});`;
+    const result = transformCode(code, [makeTraceVisitor(1)]);
+    // The ExpressionStatement inside the arrow fn body (line 2) should be traced
+    expect(result).toContain('window.__ar_e1_trace(2)');
   });
 });
 

@@ -98,7 +98,7 @@ export class SpriteEditor {
     height  = 16,
     scale   = 20,
     frames  = 1,
-    title   = 'Sprite Editor',
+    title   = 'Pixel Art',
     _desktopIconId = null,
     x, y,
   } = {}) {

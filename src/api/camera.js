@@ -1,4 +1,6 @@
 import { onReset } from '../runtime/reset-registry.js';
+import { notify, registerCommand } from '../events/index.js';
+import { recordStream } from './recorder.js';
 // ── Multi-camera API ─────────────────────────────────────────────────────────
 
 const _openCameras = [];
@@ -12,6 +14,7 @@ class CameraStream {
   constructor(stream) {
     this._stream = stream;
     this._flipped = false;
+    this._deviceId = stream.getVideoTracks()[0]?.getSettings?.().deviceId ?? null;
     this.element = document.createElement('video');
     this.element.autoplay = true;
     this.element.playsInline = true;
@@ -24,25 +27,48 @@ class CameraStream {
   flip(state = true) {
     this._flipped = state;
     this.element.style.transform = state ? 'scaleX(-1)' : '';
+    notify('camera:flip', { deviceId: this._deviceId, mirrored: state });
     return this;
   }
 
   stop() { this._release(); }
 
+  async photo({ name = 'photo', download = false } = {}) {
+    const v = this.element;
+    const w = v.videoWidth || 640, h = v.videoHeight || 480;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    if (this._flipped) { ctx.translate(w, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(v, 0, 0, w, h);
+    return new Promise(resolve => {
+      c.toBlob(blob => {
+        if (blob) window.desktop?.addBlob(blob, { name: name + '.jpg', type: 'image', download });
+        resolve(blob);
+      }, 'image/jpeg', 0.92);
+    });
+  }
+
+  record({ name = 'clip', fps = 30 } = {}) {
+    if (!this._stream) throw new Error('Camera stopped');
+    return recordStream(this._stream, {
+      onStop: blob => window.desktop?.addBlob(blob, { name: name + '.webm', type: 'video' }),
+    });
+  }
+
   _release() {
+    const deviceId = this._deviceId;
     this._stream?.getTracks().forEach(t => t.stop());
     this._stream = null;
     this.element.srcObject = null;
     const i = _openCameras.indexOf(this);
     if (i >= 0) _openCameras.splice(i, 1);
+    if (deviceId) notify('camera:close', { deviceId });
   }
 }
 
 export const Camera = {
   async open({ index = 0, deviceId = null } = {}) {
-    if (window.__ar_camera_on === false) {
-      throw new Error('Camera is disabled — enable the camera via the toolbar toggle first.');
-    }
     let id = deviceId;
     if (!id) {
       const all = await navigator.mediaDevices.enumerateDevices();
@@ -54,12 +80,23 @@ export const Camera = {
         ? { deviceId: { exact: id }, width: { ideal: 1920 }, height: { ideal: 1080 } }
         : { width: { ideal: 1920 }, height: { ideal: 1080 } },
     };
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia(constraints); }
+    catch (err) {
+      notify('camera:error', { deviceId: id, error: err?.message ?? String(err) });
+      throw err;
+    }
     const cam = new CameraStream(stream);
     // Wait for video metadata so width/height are available
     await new Promise(resolve => {
       if (cam.element.readyState >= 1) { resolve(); return; }
       cam.element.addEventListener('loadedmetadata', resolve, { once: true });
+    });
+    notify('camera:open', {
+      deviceId: cam._deviceId,
+      index,
+      width: cam.element.videoWidth,
+      height: cam.element.videoHeight,
     });
     return cam;
   },
@@ -131,6 +168,19 @@ export function initCamera() {
       .catch((err) => console.warn("Camera unavailable:", err.message));
   };
 
+  const enableCamera = () => {
+    if (cameraOn) return;
+    cameraOn = true;
+    window.__ar_camera_on = true;
+    const toggle = document.getElementById("cameraToggle");
+    toggle.innerHTML = '<i class="fa-solid fa-video"></i>';
+    toggle.classList.add("active");
+    if (!rafId) drawFrame();
+    console.log('[createos] Camera auto-enabled');
+  };
+
+  window.__ar_enableCamera = enableCamera;
+
   document.getElementById("cameraToggle").addEventListener("click", () => {
     cameraOn = !cameraOn;
     window.__ar_camera_on = cameraOn;
@@ -164,3 +214,9 @@ export function initCamera() {
 
 // Register teardown with the reset registry (ADR 008).
 onReset(cleanupCameras);
+
+// ── Event bus command handler ─────────────────────────────────────────────────
+registerCommand('camera:close', ({ deviceId }) => {
+  const cam = _openCameras.find(c => c._deviceId === deviceId);
+  if (cam) cam.stop(); // stop() → _release() → notify('camera:close', ...)
+});

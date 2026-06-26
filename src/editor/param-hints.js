@@ -30,12 +30,14 @@ export const PARAM_HINTS = {
   'ShaderFX':           ['fragmentBody', 'opts?'],
   // PIXI
   'pixi.tick':          ['fn'],
-  // Sensors
-  'sensors.onMove':     ['threshold', 'onEnter', 'onExit?'],
-  'sensors.onButton':   ['btn', 'onDown', 'onUp?'],
-  'sensors.onKey':      ['key', 'onDown', 'onUp?'],
-  'sensors.onShake':    ['threshold', 'onEnter', 'onExit?'],
-  'sensors.onTilt':     ['axis', 'threshold', 'onEnter', 'onExit?'],
+  // Input / Events (ADR 014 — sensors replaced by bus)
+  'on':                 ['event'],
+  'tick':               ['ms'],
+  'hold':               ['event'],
+  'on.when':            ['patternOrFn', 'map?'],
+  'on.every':           ['n'],
+  'on.after':           ['event'],
+  'on.within':          ['ms'],
   // Audio
   'audio.onLevel':      ['threshold', 'onEnter', 'onExit?'],
   'audio.onWord':       ['word', 'fn'],

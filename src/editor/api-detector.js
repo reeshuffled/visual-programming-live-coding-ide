@@ -32,6 +32,7 @@ export const API_PATTERNS = {
   usesMedia:    /\bMedia\s*\./,
   usesDraw:     /\bdraw\s*\.(?!toASCII\b)/,
   usesLayer:    /\bgetLayer\s*\(/,
+  usesGetCanvas: /\bgetCanvas\s*\(/,
   usesThree:    /\bnew\s+ThreeScene\b|\bTHREE\s*\./,
 };
 

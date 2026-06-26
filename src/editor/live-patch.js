@@ -1,13 +1,35 @@
 import esprima from "esprima";
 
-export function addInfiniteLoopProtection(code, timeout = 2000) {
+// ── Transform pipeline ────────────────────────────────────────────────────────
+// transformCode(code, visitors): one Esprima parse, N visitors each contribute
+// {pos,str} patches, all patches sorted desc and spliced once. Visitors see
+// original source positions so line numbers stay accurate across visitors.
+//
+// Visitors are functions (node, patches) => void, optionally with a `.finalize(patches)`
+// method called after the full walk completes (for two-phase visitors that need to see
+// all nodes before generating patches — e.g. to filter based on parent node ranges).
+export function transformCode(code, visitors) {
+  const patches = [];
+  try {
+    esprima.parseScript(code, { tolerant: true, range: true, loc: true }, (node) => {
+      for (const v of visitors) v(node, patches);
+    });
+  } catch (_) {}
+  for (const v of visitors) v.finalize?.(patches);
+  patches
+    .sort((a, b) => b.pos - a.pos)
+    .forEach((p) => { code = code.slice(0, p.pos) + p.str + code.slice(p.pos); });
+  return code;
+}
+
+// ── Visitor factories ─────────────────────────────────────────────────────────
+
+export function makeLoopProtectionVisitor(timeout = 2000) {
   let loopId = 1;
-  let patches = [];
   const varPrefix = "_wmloopvar";
   const varStr = "var %d = Date.now();\n";
   const checkStr = `\nif (Date.now() - %d > ${timeout}) { window.stopRunning(); throw new Error("Infinite loop detected. Please make changes and press Run when you are ready to try again."); break;}\n`;
-
-  esprima.parseScript(code, { tolerant: true, range: true }, (node) => {
+  return (node, patches) => {
     switch (node.type) {
       case "DoWhileStatement":
       case "ForStatement":
@@ -29,20 +51,56 @@ export function addInfiniteLoopProtection(code, timeout = 2000) {
         ++loopId;
         break;
       }
-      default:
-        break;
+      default: break;
     }
-  });
-
-  patches
-    .sort((a, b) => b.pos - a.pos)
-    .forEach((p) => {
-      code = code.slice(0, p.pos) + p.str + code.slice(p.pos);
-    });
-
-  return code;
+  };
 }
 
+const _TRACE_TYPES = new Set([
+  'ExpressionStatement', 'VariableDeclaration', 'FunctionDeclaration', 'ClassDeclaration',
+  'ReturnStatement', 'ThrowStatement', 'BreakStatement', 'ContinueStatement',
+  'IfStatement', 'SwitchStatement', 'TryStatement',
+  'WhileStatement', 'DoWhileStatement', 'ForStatement', 'ForInStatement', 'ForOfStatement',
+  'LabeledStatement', 'DebuggerStatement',
+]);
+
+export function makeTraceVisitor(editorId) {
+  // Esprima visits children BEFORE parents (post-order), so we can't mark forbidden
+  // ranges before children are visited. Instead we collect candidates + forbidden
+  // ranges during the walk, then filter in finalize() after the full walk.
+  const _candidates = []; // { pos, line }
+  const _forbidden  = new Set(); // char positions inside for-loop header parts
+
+  const visitor = (node, _patches) => {
+    // Collect for-loop header ranges as forbidden (VariableDeclarations here are
+    // NOT standalone statements — injecting trace calls there produces invalid JS).
+    if (node.type === 'ForStatement') {
+      if (node.init)   for (let p = node.init.range[0];   p < node.init.range[1];   p++) _forbidden.add(p);
+      if (node.update) for (let p = node.update.range[0]; p < node.update.range[1]; p++) _forbidden.add(p);
+    } else if (node.type === 'ForInStatement' || node.type === 'ForOfStatement') {
+      if (node.left) for (let p = node.left.range[0]; p < node.left.range[1]; p++) _forbidden.add(p);
+    }
+    if (!_TRACE_TYPES.has(node.type) || !node.loc) return;
+    _candidates.push({ pos: node.range[0], line: node.loc.start.line });
+  };
+
+  visitor.finalize = (patches) => {
+    for (const { pos, line } of _candidates) {
+      if (!_forbidden.has(pos)) {
+        patches.push({ pos, str: `window.__ar_e${editorId}_trace(${line});` });
+      }
+    }
+  };
+
+  return visitor;
+}
+
+// ── Backwards-compat wrapper ──────────────────────────────────────────────────
+export function addInfiniteLoopProtection(code, timeout = 2000) {
+  return transformCode(code, [makeLoopProtectionVisitor(timeout)]);
+}
+
+// ── Error helpers ─────────────────────────────────────────────────────────────
 export function friendlyError(raw) {
   const m = String(raw?.message ?? raw);
   const dup = m.match(/Identifier ['"]?(\w+)['"]? has already been declared/);

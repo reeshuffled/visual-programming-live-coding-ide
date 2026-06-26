@@ -1,7 +1,9 @@
 import * as Tone from "tone";
 import { AudioViz, SpectrogramCanvas, PianoRollViz, EQWidget, _noteHooks } from "./viz.js";
 import { Drumpad } from "./drumpad.js";
+import { Piano } from "./piano.js";
 import { onReset } from '../runtime/reset-registry.js';
+import { notify, registerCommand } from '../events/index.js';
 
 const _nativeSetInterval = window.setInterval.bind(window);
 const _nativeClearInterval = window.clearInterval.bind(window);
@@ -9,10 +11,34 @@ const _nativeSetTimeout = window.setTimeout.bind(window);
 
 const _tracked = [];
 const _cleanupFns = [];
+const _patternRegistry = new Map(); // patId → Pattern instance
+let _patIdCounter = 0;
 let _masterFftSignal = null;
 let _recognition = null;
 const _wordHandlers = new Map();
 const _speechHandlers = [];
+
+// ── Beat ticker ───────────────────────────────────────────────────────────────
+// Fires beat:tick / beat:bar / beat:phrase whenever the Tone.js transport runs.
+// Reset and re-scheduled on every cleanupAudio() since cancel() wipes schedules.
+let _beatCounter = 0;
+let _beatScheduleId = null;
+function _setupBeatSchedule() {
+  _beatCounter = 0;
+  // scheduleRepeat may not exist in test environments (Tone mock doesn't implement it)
+  if (typeof Tone.getTransport?.().scheduleRepeat !== 'function') return;
+  _beatScheduleId = Tone.getTransport().scheduleRepeat(() => {
+    const bpm  = Tone.getTransport().bpm.value;
+    const bar  = Math.floor(_beatCounter / 4);
+    const beat = _beatCounter % 4;
+    const time = Tone.now();
+    notify('beat:tick', { bpm, bar, beat, time });
+    if (beat === 0)                notify('beat:bar',    { bpm, bar, time });
+    if (_beatCounter % 16 === 0)   notify('beat:phrase', { bpm, phrase: Math.floor(_beatCounter / 16), time });
+    _beatCounter++;
+  }, '4n');
+}
+_setupBeatSchedule();
 
 function track(d) {
   _tracked.push(d);
@@ -47,7 +73,10 @@ function _readFft(src, bins) {
 
 // Wrap a Tone node with an internal Analyser; pass through AnalyserNode/Tone.Analyser/string.
 function _makeAnalyser(source, bins) {
-  if (!source || source === 'mic') return source;
+  if (!source || source === 'mic') {
+    if (source === 'mic' && !window.__ar_mic_on) window.__ar_enableMic?.();
+    return source;
+  }
   if (typeof source.getValue === 'function') return source; // Tone.Analyser
   if (source.frequencyBinCount) return source;              // Web Audio AnalyserNode
   // Tone instrument/effect — connect a new Analyser
@@ -71,10 +100,14 @@ function _ensureRecognition() {
       .map(res => res[0].transcript.trim().toLowerCase())
       .join(' ');
     if (!transcript) return;
+    notify('audio:speech', { text: transcript });
     _speechHandlers.forEach(fn => fn(transcript));
     transcript.split(/\s+/).forEach(word => {
       const handlers = _wordHandlers.get(word);
-      if (handlers) handlers.forEach(fn => fn());
+      if (handlers) {
+        notify('audio:word', { word });
+        handlers.forEach(fn => fn());
+      }
     });
   };
   r.onerror = (e) => { if (e.error !== 'no-speech') console.warn('Speech recognition error:', e.error); };
@@ -85,8 +118,12 @@ function _ensureRecognition() {
 }
 
 export function cleanupAudio() {
+  _patternRegistry.clear();
+  _patIdCounter = 0;
   Tone.getTransport().stop();
   Tone.getTransport().cancel();
+  _beatScheduleId = null;
+  _setupBeatSchedule(); // re-register after cancel() wipes scheduled events
 
   // _cleanupFns: RAF/interval cancels and AudioFile state teardown — immediate.
   const toCleanup = _cleanupFns.splice(0);
@@ -302,16 +339,23 @@ function _xpNote(val, n) {
   try { return _midiToNote(Tone.Frequency(val).toMidi() + n); } catch (_) { return val; }
 }
 
-function _firePat(inst, value, time, dur, gain) {
+function _firePat(inst, value, time, dur, gain, patId) {
+  if (patId) {
+    notify(`${patId}:hit`, { value, velocity: gain ?? 1, dur });
+    notify(`${patId}:${value}`, { velocity: gain ?? 1, dur });
+  }
   if (!inst) return;
   if (inst instanceof Instrument) {
     const inner = inst._;
     const noNote = inner instanceof Tone.NoiseSynth || inner instanceof Tone.MetalSynth;
     const vel = gain !== undefined ? Math.max(0, Math.min(1, gain)) : undefined;
-    if (noNote) inner.triggerAttackRelease(dur, time, vel);
-    else {
+    if (noNote) {
+      inner.triggerAttackRelease(dur, time, vel);
+      notify('audio:note-play', { note: null, duration: dur, patId });
+    } else {
       const note = /^[A-G]/i.test(value) ? value : 'C4';
       inner.triggerAttackRelease(note, dur, time, vel);
+      notify('audio:note-play', { note, duration: dur, patId });
     }
   } else if (typeof inst === 'function') {
     inst(value, time, dur);
@@ -399,23 +443,37 @@ export class Pattern {
 
   // ── Scheduling ───────────────────────────────────────────────────────────
 
-  start(inst) {
+  start(instOrOpts) {
+    let inst, id;
+    if (instOrOpts !== null && instOrOpts !== undefined &&
+        typeof instOrOpts === 'object' && ('id' in instOrOpts || 'inst' in instOrOpts)) {
+      id = instOrOpts.id;
+      inst = instOrOpts.inst;
+    } else {
+      inst = instOrOpts;
+    }
     if (inst !== undefined) this._inst = inst;
+    this._id = id ?? `pat-${++_patIdCounter}`;
+    _patternRegistry.set(this._id, this);
     this._cn = 0;
+    const patId = this._id;
     const getCyc = () => Tone.Time(this._ct).toSeconds();
     const loop = track(new Tone.Loop((t) => {
       const cs = getCyc();
       this._q(this._cn++).forEach(({ value, time: tt, dur, gain }) => {
-        _firePat(this._inst, value, t + tt * cs, dur * cs, gain);
+        _firePat(this._inst, value, t + tt * cs, dur * cs, gain, patId);
       });
     }, getCyc()));
     loop.start(0);
     this._loop = loop;
+    notify('pattern:started', { id: this._id });
     return this;
   }
 
   stop() {
     if (this._loop) { this._loop.stop(); this._loop = null; }
+    if (this._id) _patternRegistry.delete(this._id);
+    notify('pattern:stopped', { id: this._id });
     return this;
   }
 }
@@ -774,14 +832,17 @@ class AudioAPI {
   // ── Transport ────────────────────────────────────────────────────────────
   bpm(value) {
     Tone.getTransport().bpm.value = value;
+    notify('audio:bpm-change', { bpm: value });
     return this;
   }
   start(time) {
     Tone.getTransport().start(time);
+    notify('audio:start', { bpm: Tone.getTransport().bpm.value });
     return this;
   }
   stop() {
     Tone.getTransport().stop();
+    notify('audio:stop', {});
     return this;
   }
 
@@ -858,8 +919,9 @@ class AudioAPI {
     return m;
   }
 
-  // Live RMS amplitude 0–1 from the harness mic AnalyserNode. Returns 0 if mic is off.
+  // Live RMS amplitude 0–1 from the harness mic AnalyserNode. Auto-enables mic on first call.
   get level() {
+    if (!window.__ar_mic_on) window.__ar_enableMic?.();
     const analyser = window.__ar_mic_analyser;
     if (!analyser) return 0;
     const data = new Uint8Array(analyser.fftSize);
@@ -876,9 +938,16 @@ class AudioAPI {
   onLevel(threshold, onEnter, onExit) {
     let wasAbove = false;
     const id = _nativeSetInterval(() => {
-      const above = this.level >= threshold;
-      if (above && !wasAbove) { wasAbove = true; onEnter(); }
-      else if (!above && wasAbove) { wasAbove = false; if (onExit) onExit(); }
+      const _lvl = this.level;
+      const above = _lvl >= threshold;
+      if (above && !wasAbove) {
+        wasAbove = true;
+        notify('audio:level', { level: _lvl });
+        onEnter();
+      } else if (!above && wasAbove) {
+        wasAbove = false;
+        if (onExit) onExit();
+      }
     }, 50);
     _cleanupFns.push(() => _nativeClearInterval(id));
     return this;
@@ -913,6 +982,7 @@ class AudioAPI {
       if (v) utt.voice = v;
     }
     speechSynthesis.speak(utt);
+    notify('audio:say', { text });
     return this;
   }
 
@@ -958,6 +1028,8 @@ class AudioAPI {
 
   // 8-pad drum machine with step sequencer.
   drumpad(opts = {}) { return new Drumpad(opts); }
+  // Polyphonic piano widget with chord sequencer and synth presets.
+  piano(opts = {})   { return new Piano(opts); }
 
   meter() {
     return track(new Tone.Meter());
@@ -1092,3 +1164,10 @@ export const audio = new AudioAPI();
 
 // Register teardown with the reset registry (ADR 008).
 onReset(cleanupAudio);
+
+// ── Event bus command handlers ─────────────────────────────────────────────
+registerCommand('audio:start',      ({ bpm } = {}) => { if (bpm !== undefined) audio.bpm(bpm); audio.start(); });
+registerCommand('audio:stop',       ()              => { audio.stop(); });
+registerCommand('audio:bpm-change', ({ bpm })       => { if (bpm !== undefined) audio.bpm(bpm); });
+registerCommand('pattern:stop',     ({ id })        => _patternRegistry.get(id)?.stop());
+registerCommand('pattern:start',    ({ id })        => _patternRegistry.get(id)?.start());

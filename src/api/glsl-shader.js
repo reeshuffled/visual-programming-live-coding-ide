@@ -7,8 +7,12 @@ import { resolveDrawable } from './drawable-source.js';
 import { liveOutput } from '../runtime/keep-alive.js';
 import { mountLayerCanvas } from './layer.js';
 import { onReset } from '../runtime/reset-registry.js';
+import { notify } from '../events/index.js';
+import { registerShaderInstance } from './shader.js';
 
 const _glShaders = [];
+
+let _glShaderIdCounter = 0;
 
 export function cleanupGLShaders() {
   for (const s of _glShaders) s._destroy();
@@ -115,6 +119,7 @@ function _readFft(src, bins = 32) {
 
 export class GLShader {
   constructor(fragBody, { z = 30, opacity = 1.0, video = null, container = null } = {}) {
+    this._id       = `glsl-${++_glShaderIdCounter}`;
     this._fragSrc  = resolveGLSL(fragBody);
     this._z        = z;
     this._opacity  = opacity;
@@ -133,6 +138,7 @@ export class GLShader {
     this._boundAnalyser = null;
 
     _glShaders.push(this);
+    registerShaderInstance(this._id, this); // register in shared shader registry for event bus commands
   }
 
   // ── Video source resolution ──────────────────────────────────────────────
@@ -169,6 +175,7 @@ export class GLShader {
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
       const info = gl.getShaderInfoLog(s);
       gl.deleteShader(s);
+      notify('shader:error', { id: this._id, error: info, line: null });
       throw new Error(`GLShader compile error:\n${info}`);
     }
     return s;
@@ -197,8 +204,11 @@ export class GLShader {
     gl.deleteShader(vert);
     gl.deleteShader(frag);
     if (!gl.getProgramParameter(this._program, gl.LINK_STATUS)) {
-      throw new Error(`GLShader link error: ${gl.getProgramInfoLog(this._program)}`);
+      const linkInfo = gl.getProgramInfoLog(this._program);
+      notify('shader:error', { id: this._id, error: linkInfo, line: null });
+      throw new Error(`GLShader link error: ${linkInfo}`);
     }
+    notify('shader:compile', { id: this._id, type: 'glsl' });
 
     // Full-screen triangle (same topology as WGSL Shader)
     const buf = gl.createBuffer();
@@ -308,11 +318,16 @@ export class GLShader {
       this._rafId = requestAnimationFrame(loop);
     };
     this._rafId = requestAnimationFrame(loop);
+    notify('shader:start', { id: this._id });
     return this;
   }
 
   stop() {
-    if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+    if (this._rafId) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+      notify('shader:stop', { id: this._id });
+    }
     return this;
   }
 
@@ -324,6 +339,7 @@ export class GLShader {
     } else {
       this._custom[indexOrArray] = value;
     }
+    notify('shader:uniform', { id: this._id, key: indexOrArray, value });
     return this;
   }
 
@@ -332,6 +348,7 @@ export class GLShader {
       this._boundSignal   = source;
       this._boundAnalyser = null;
     } else {
+      if (source === 'mic' && !window.__ar_mic_on) window.__ar_enableMic?.();
       this._boundSignal   = null;
       this._boundAnalyser = source;
     }

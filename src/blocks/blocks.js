@@ -1202,6 +1202,61 @@ Blockly.defineBlocksWithJsonArray([
     tooltip: 'Return a live 0–1 decaying-pulse signal for a pad (or any pad). .value jumps to 1 on each hit and decays to 0. Use with shader.set() or draw.',
   },
 
+  // ── Piano ──────────────────────────────────────────────────────────────────
+  {
+    type: 'piano_open',
+    message0: 'piano title %1 preset %2',
+    args0: [
+      { type: 'field_input', name: 'TITLE', text: 'Piano' },
+      {
+        type: 'field_dropdown', name: 'PRESET', options: [
+          ['electric', 'electric'],
+          ['grand',    'grand'],
+          ['organ',    'organ'],
+          ['pluck',    'pluck'],
+          ['pad',      'pad'],
+          ['bass',     'bass'],
+        ],
+      },
+    ],
+    output: null,
+    colour: 20,
+    tooltip: 'Open a piano widget and return the piano object. Connect to on-note/on-key/on-step blocks or use p.signal().',
+  },
+  {
+    type: 'piano_on_note',
+    message0: 'on piano %1 any note',
+    args0: [{ type: 'input_value', name: 'PIANO' }],
+    message1: 'do %1',
+    args1: [{ type: 'input_statement', name: 'DO' }],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 20,
+    tooltip: 'Run code whenever any piano key is played (mouse, keyboard, or sequencer).',
+  },
+  {
+    type: 'piano_on_step',
+    message0: 'on piano %1 sequencer step',
+    args0: [{ type: 'input_value', name: 'PIANO' }],
+    message1: 'do %1',
+    args1: [{ type: 'input_statement', name: 'DO' }],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 20,
+    tooltip: 'Run code once per sequencer step (0-15) while the piano sequencer is playing.',
+  },
+  {
+    type: 'piano_signal',
+    message0: 'piano %1 signal decay %2 ms',
+    args0: [
+      { type: 'input_value', name: 'PIANO' },
+      { type: 'field_number', name: 'DECAY', value: 300, min: 10, max: 5000 },
+    ],
+    output: null,
+    colour: 20,
+    tooltip: 'Return a live 0–1 decaying-pulse signal for any note on the piano. .value jumps to 1 on each hit and decays to 0.',
+  },
+
   // ── PIXI ───────────────────────────────────────────────────────────────────
   {
     type: 'pixi_graphics_circle',
@@ -1980,6 +2035,28 @@ javascriptGenerator.forBlock['wm_browse'] = (b, g) => {
   return `await wm.browse(${key}, (${urlVar}, ${nameVar}) => {\n${body}}, { w: ${w}, h: ${h} });\n`;
 };
 
+// Piano
+javascriptGenerator.forBlock['piano_open'] = (b) => {
+  const title  = JSON.stringify(b.getFieldValue('TITLE'));
+  const preset = JSON.stringify(b.getFieldValue('PRESET'));
+  return [`audio.piano({ title: ${title}, preset: ${preset} })`, Order.FUNCTION_CALL];
+};
+javascriptGenerator.forBlock['piano_on_note'] = (b, g) => {
+  const p    = g.valueToCode(b, 'PIANO', Order.NONE) || 'null';
+  const body = g.statementToCode(b, 'DO');
+  return `(${p}).onNote(() => {\n${body}});\n`;
+};
+javascriptGenerator.forBlock['piano_on_step'] = (b, g) => {
+  const p    = g.valueToCode(b, 'PIANO', Order.NONE) || 'null';
+  const body = g.statementToCode(b, 'DO');
+  return `(${p}).onStep(() => {\n${body}});\n`;
+};
+javascriptGenerator.forBlock['piano_signal'] = (b, g) => {
+  const p     = g.valueToCode(b, 'PIANO', Order.NONE) || 'null';
+  const decay = b.getFieldValue('DECAY');
+  return [`(${p}).signal(null, { decay: ${decay} })`, Order.FUNCTION_CALL];
+};
+
 // Drumpad
 javascriptGenerator.forBlock['drumpad_open'] = (b) => {
   const title = JSON.stringify(b.getFieldValue('TITLE'));
@@ -2126,7 +2203,10 @@ javascriptGenerator.forBlock['ctrl_onkey_char'] = (b, g) => {
   const down = g.statementToCode(b, 'DOWN');
   const up = g.statementToCode(b, 'UP');
   const upArg = up ? `, () => {\n${up}}` : '';
-  return `sensors.keyboard().onKey(${key}, () => {\n${down}}${upArg});\n`;
+  const k = JSON.parse(key); // unquoted key string for use as property name
+  let code = `on('window:key:down').when({ ${k}: () => {\n${down}} });\n`;
+  if (up) code += `on('window:key:up').when({ ${k}: () => {\n${up}} });\n`;
+  return code;
 };
 
 // Three.js 3D
@@ -2400,7 +2480,7 @@ Blockly.defineBlocksWithJsonArray([
   // SpriteEditor — value open
   {
     type: 'sprite_editor_open',
-    message0: 'sprite editor %1×%2 scale %3',
+    message0: 'pixel art %1×%2 scale %3',
     args0: [
       { type: 'field_number', name: 'W', value: 16, min: 1 },
       { type: 'field_number', name: 'H', value: 16, min: 1 },
@@ -2408,11 +2488,11 @@ Blockly.defineBlocksWithJsonArray([
     ],
     output: null,
     colour: 65,
-    tooltip: 'Open Sprite Editor and return the handle. Connect to on-pixel / on-stroke / signal blocks.',
+    tooltip: 'Open Pixel Art editor and return the handle. Connect to on-pixel / on-stroke / signal blocks.',
   },
   {
     type: 'sprite_editor_on_pixel',
-    message0: 'on sprite editor %1 pixel painted',
+    message0: 'on pixel art %1 pixel painted',
     args0: [{ type: 'input_value', name: 'SP' }],
     message1: 'do %1',
     args1: [{ type: 'input_statement', name: 'DO' }],
@@ -2423,7 +2503,7 @@ Blockly.defineBlocksWithJsonArray([
   },
   {
     type: 'sprite_editor_on_stroke',
-    message0: 'on sprite editor %1 stroke',
+    message0: 'on pixel art %1 stroke',
     args0: [{ type: 'input_value', name: 'SP' }],
     message1: 'do %1',
     args1: [{ type: 'input_statement', name: 'DO' }],
@@ -2434,7 +2514,7 @@ Blockly.defineBlocksWithJsonArray([
   },
   {
     type: 'sprite_editor_signal',
-    message0: 'sprite editor %1 event %2 signal decay %3 ms',
+    message0: 'pixel art %1 event %2 signal decay %3 ms',
     args0: [
       { type: 'input_value', name: 'SP' },
       {
@@ -2450,7 +2530,7 @@ Blockly.defineBlocksWithJsonArray([
     ],
     output: null,
     colour: 65,
-    tooltip: 'Live 0–1 decaying-pulse signal from the sprite editor. value=1 on event, decays to 0.',
+    tooltip: 'Live 0–1 decaying-pulse signal from the pixel art editor. value=1 on event, decays to 0.',
   },
 
   // AsciiEditor — value open
@@ -2836,6 +2916,24 @@ export const TOOLBOX = {
           inputs: { DP: { block: { type: 'drumpad_open' } } },
         },
         { kind: 'block', type: 'drumpad_open' },
+      ],
+    },
+    {
+      kind: 'category', name: 'Piano', colour: 20,
+      contents: [
+        {
+          kind: 'block', type: 'piano_on_note',
+          inputs: { PIANO: { block: { type: 'piano_open' } } },
+        },
+        {
+          kind: 'block', type: 'piano_on_step',
+          inputs: { PIANO: { block: { type: 'piano_open' } } },
+        },
+        {
+          kind: 'block', type: 'piano_signal',
+          inputs: { PIANO: { block: { type: 'piano_open' } } },
+        },
+        { kind: 'block', type: 'piano_open' },
       ],
     },
     {

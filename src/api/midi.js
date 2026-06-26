@@ -1,4 +1,5 @@
 import { onReset } from '../runtime/reset-registry.js';
+import { notify } from '../events/index.js';
 // midi.js — Web MIDI API wrapper (#40)
 // midi.open() → Promise<midi>; midi.inputs(); midi.onNote(fn); midi.onCC(ch,cc,fn);
 // midi.signal(ch,cc) → live signal; midi.spawn() → MIDI monitor window
@@ -20,6 +21,7 @@ const _midi = {
         _midi._setupInput(e.port);
       }
     };
+    notify('midi:open', { inputs: _midi.inputs() });
     return _midi;
   },
 
@@ -32,17 +34,23 @@ const _midi = {
     const type    = status & 0xF0;
     const channel = status & 0x0F;
 
-    if (type === 0x90 && data2 > 0) {
-      const ev = { type: 'noteon',  note: data1, velocity: data2, channel };
-      for (const fn of _midi._noteHandlers) fn(ev);
+    if (status === 0xF8) {
+      // MIDI clock (24 PPQ)
+      notify('midi:clock', {});
+    } else if (type === 0x90 && data2 > 0) {
+      const ev = { note: data1, velocity: data2, channel };
+      notify('midi:note:on', ev);
+      for (const fn of _midi._noteHandlers) fn({ type: 'noteon', ...ev });
     } else if (type === 0x80 || (type === 0x90 && data2 === 0)) {
-      const ev = { type: 'noteoff', note: data1, velocity: data2, channel };
-      for (const fn of _midi._noteHandlers) fn(ev);
+      const ev = { note: data1, velocity: data2, channel };
+      notify('midi:note:off', ev);
+      for (const fn of _midi._noteHandlers) fn({ type: 'noteoff', ...ev });
     } else if (type === 0xB0) {
       const value = data2 / 127;
       const key   = `${channel}:${data1}`;
       if (_midi._signals.has(key)) _midi._signals.get(key)._val = value;
       const ev = { cc: data1, value, channel, raw: data2 };
+      notify('midi:cc', { channel, cc: data1, value });
       for (const fn of _midi._ccHandlers) fn(ev);
     }
   },

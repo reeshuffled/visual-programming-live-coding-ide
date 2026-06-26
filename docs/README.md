@@ -15,8 +15,10 @@ Press **?** in the IDE for the in-app audio quick reference.
 | [vision.md](vision.md) | Object detection, gesture, face expression |
 | [video.md](video.md) | Sample canvas/camera regions as live brightness/color/motion signals |
 | [sensors.md](sensors.md) | Mouse, keyboard, gamepad, device motion, geolocation, network, battery signals |
+| [serial.md](serial.md) | WebSerial — read/write Arduino/ESP32/Pico via USB; GPIO pin events |
 | [control.md](control.md) | Timers, keyboard, color, utilities |
 | [windows.md](windows.md) | Spawn, tile, show/hide, move/resize IDE windows from code |
+| [capture.md](capture.md) | Webcam photo/video + output-window recording → desktop |
 | [desktop.md](desktop.md) | Desktop file icon management |
 | [pixel-art.md](pixel-art.md) | Pixel-grid sprites — programmatic API + Aseprite-style visual editor |
 

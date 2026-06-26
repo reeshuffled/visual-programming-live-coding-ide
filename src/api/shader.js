@@ -4,12 +4,15 @@ import { resolveDrawable } from './drawable-source.js';
 import { onReset } from '../runtime/reset-registry.js';
 import { liveOutput } from '../runtime/keep-alive.js';
 import { mountLayerCanvas } from './layer.js';
+import { notify, registerCommand } from '../events/index.js';
 
 const _shaders = [];
+const _shaderRegistry = new Map(); // id → Shader instance (for event bus command handlers)
 
 export function cleanupShaders() {
   for (const s of _shaders) s._destroy();
   _shaders.length = 0;
+  _shaderRegistry.clear();
 }
 
 // Track mouse in canvas-space for shader uniforms (module-level, persists across runs)
@@ -121,8 +124,11 @@ function _readShaderFft(src, bins = 32) {
 
 // ── Shader class ────────────────────────────────────────────────────────────
 
+let _shaderIdCounter = 0;
+
 export class Shader {
   constructor(fragmentBodyOrWGSL, { z = 30, opacity = 1.0, video = null, container = null, bind = null } = {}) {
+    this._id = `shader-${++_shaderIdCounter}`;
     // Accept a JS function — transpiled to WGSL at start() time (after video src is known)
     this._fn      = typeof fragmentBodyOrWGSL === 'function' ? fragmentBodyOrWGSL : null;
     this._fragSrc = this._fn ? null : resolveWGSL(fragmentBodyOrWGSL);
@@ -150,6 +156,7 @@ export class Shader {
     this._videoTexSize = null;
 
     _shaders.push(this);
+    _shaderRegistry.set(this._id, this);
   }
 
   // ── Video source resolution ──────────────────────────────────────────────
@@ -243,7 +250,11 @@ export class Shader {
     this._device.pushErrorScope("validation");
     const shaderModule = this._device.createShaderModule({ code: wgsl });
     const shaderErr = await this._device.popErrorScope();
-    if (shaderErr) throw new Error(`Shader compile error: ${shaderErr.message}`);
+    if (shaderErr) {
+      notify('shader:error', { id: this._id, error: shaderErr.message, line: null });
+      throw new Error(`Shader compile error: ${shaderErr.message}`);
+    }
+    notify('shader:compile', { id: this._id, type: 'wgsl' });
 
     this._device.pushErrorScope("validation");
     this._pipeline = this._device.createRenderPipeline({
@@ -413,6 +424,7 @@ export class Shader {
         this._rafId = requestAnimationFrame(loop);
       };
       this._rafId = requestAnimationFrame(loop);
+      notify('shader:start', { id: this._id });
     })().catch((e) => {
       console.error("Shader error:", e.message);
       this._live?.release();
@@ -424,6 +436,7 @@ export class Shader {
     if (this._rafId) {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
+      notify('shader:stop', { id: this._id });
     }
     return this;
   }
@@ -441,6 +454,7 @@ export class Shader {
     } else {
       this._custom[indexOrArray] = value;
     }
+    notify('shader:uniform', { id: this._id, key: indexOrArray, value });
     return this;
   }
 
@@ -525,6 +539,7 @@ export class ShaderFX {
   }
 
   static micVizShader(effect = 'greyscale') {
+    if (!window.__ar_mic_on) window.__ar_enableMic?.();
     const src = window.__ar_mic_viz ?? null;
     return new Shader(CAMERA_PRESETS[effect] ?? CAMERA_PRESETS.greyscale, { video: src });
   }
@@ -538,6 +553,14 @@ export class ShaderFX {
   static window(name = 'editor', effect = 'greyscale') { return ShaderFX.windowShader(name, effect).start(); }
   static micViz(effect = 'greyscale') { return ShaderFX.micVizShader(effect).start(); }
 }
+
+// ── Event bus command handlers ─────────────────────────────────────────────────
+// _shaderRegistry stores both Shader (WGSL) and GLShader (WebGL) instances so one
+// set of handlers covers both. GLShader registers via registerShaderInstance() below.
+export function registerShaderInstance(id, instance) { _shaderRegistry.set(id, instance); }
+registerCommand('shader:start',   ({ id }) => { _shaderRegistry.get(id)?.start(); });
+registerCommand('shader:stop',    ({ id }) => { _shaderRegistry.get(id)?.stop(); });
+registerCommand('shader:uniform', ({ id, key, value }) => { _shaderRegistry.get(id)?.set(key, value); });
 
 // Register teardown with the reset registry (ADR 008).
 onReset(cleanupShaders);

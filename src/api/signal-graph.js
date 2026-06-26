@@ -1,6 +1,6 @@
 import { onReset } from '../runtime/reset-registry.js';
 // signal-graph.js — read-only overlay of signal-bus routing
-// Sources: audio.fft, sensors.*, video.signal(), camera streams
+// Sources: audio.fft, hold('sensor:*'), hold('window:mouse:move'), video.signal(), camera streams
 // Sinks: ThreeScene, Shader, GLShader, pipe()
 // Routes stored in window.__ar_signalRoutes (array of { source, sink, label })
 

@@ -14,13 +14,12 @@ export const SIGNAL_SOURCES = [
   { label: 'audio.fft mid',    code: 'audio.fft.mid',        category: 'Audio' },
   { label: 'audio.fft high',   code: 'audio.fft.high',       category: 'Audio' },
   { label: 'audio.fft value',  code: 'audio.fft.value',      category: 'Audio' },
-  // Mouse
-  { label: 'mouse.x',               code: 'sensors.mouse().x / draw.width',       category: 'Mouse' },
-  { label: 'mouse.y',               code: 'sensors.mouse().y / draw.height',      category: 'Mouse' },
-  { label: 'mouse.speed',           code: 'sensors.mouse().speed',                category: 'Mouse' },
-  // Motion
-  { label: 'motion.magnitude',      code: 'sensors.motion().magnitude',           category: 'Motion' },
-  { label: 'motion.az',             code: 'sensors.motion().az',                  category: 'Motion' },
+  // Mouse — hold('window:mouse:move') for live position
+  { label: 'mouse.x',               code: 'hold(\'window:mouse:move\').x / draw.width',  category: 'Mouse' },
+  { label: 'mouse.y',               code: 'hold(\'window:mouse:move\').y / draw.height', category: 'Mouse' },
+  // Motion — hold('sensor:motion') for live device orientation
+  { label: 'motion.magnitude',      code: 'hold(\'sensor:motion\').magnitude',           category: 'Motion' },
+  { label: 'motion.az',             code: 'hold(\'sensor:motion\').az',                  category: 'Motion' },
   // Video brightness
   { label: 'cam brightness',        code: 'video.signal("camera").brightness',    category: 'Camera' },
   { label: 'cam motion',            code: 'video.signal("camera").motion',        category: 'Camera' },

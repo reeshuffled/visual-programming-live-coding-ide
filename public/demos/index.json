@@ -26,5 +26,12 @@
     "desc": "Lissajous-style spiral with glowing trails on the canvas",
     "file": "spiral-trail.vljson",
     "tags": ["canvas", "animation", "visual"]
+  },
+  {
+    "id": "reactive-ripples",
+    "title": "Reactive Ripples",
+    "desc": "Beat-driven interference rings — showcases on/any/every/when event bus modifiers",
+    "file": "reactive-ripples.vljson",
+    "tags": ["events", "audio", "draw", "reactive"]
   }
 ]

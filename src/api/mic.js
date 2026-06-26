@@ -57,6 +57,19 @@ export function initMic() {
     ctx.clearRect(0, 0, vizCanvas.width, vizCanvas.height);
   };
 
+  const enableMic = () => {
+    if (micOn) return;
+    micOn = true;
+    window.__ar_mic_on = true;
+    toggle.innerHTML = '<i class="fa-solid fa-microphone"></i>';
+    toggle.classList.add("active");
+    currentStream?.getAudioTracks().forEach((t) => (t.enabled = true));
+    startMic();
+    console.log('[createos] Mic auto-enabled');
+  };
+
+  window.__ar_enableMic = enableMic;
+
   toggle.addEventListener("click", () => {
     micOn = !micOn;
     window.__ar_mic_on = micOn;

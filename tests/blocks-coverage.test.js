@@ -31,6 +31,7 @@ const COVERAGE = {
   'Media':           ['media_'],
   'Shader':          ['shader_'],
   'Audio':           ['audio_', 'drumpad_'],
+  'Piano':           ['piano_'],
   'Audio→Visual':    ['audio_viz'],
   'Patterns':        ['pat_'],
   'Canvas':          ['canvas_', 'draw_'],
@@ -66,8 +67,12 @@ const TEXT_ONLY_INTENTIONAL = new Set([
 // Known gaps — learner-facing, no blocks path yet. The gate passes today while
 // keeping the backlog visible. When blocks land, move the entry to COVERAGE.
 const BLOCKS_TODO = new Set([
-  'Sensors',  // mouse/keyboard/gamepad/motion — high learner value, deserves blocks
-  'Haptics',  // sensors.vibrate — small; could fold into a Sensors block set
+  'Sensors',      // mouse/keyboard/gamepad/motion — high learner value, deserves blocks
+  'Haptics',      // sensors.vibrate — small; could fold into a Sensors block set
+  'Notepad',      // rich-text window widget — high learner value, blocks path pending
+  'Capture',      // webcam photo/record + output-window recording — pending blocks
+  'Actors',       // pattern/pipeline actor control — reactive wiring blocks pending (ADR 017)
+  'Serial / GPIO', // WebSerial hardware I/O — user-gesture connect awkward in blocks; text-first (ADR 020)
 ]);
 
 const TOOLKIT_NAMES = TOOLKIT_CATEGORIES.map((c) => c.name);

@@ -8,7 +8,7 @@ import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } 
 import { highlightSelectionMatches } from '@codemirror/search';
 import { linter, lintGutter } from '@codemirror/lint';
 import esprima from 'esprima';
-import { addInfiniteLoopProtection, friendlyError, extractScriptLine } from './live-patch.js';
+import { transformCode, makeLoopProtectionVisitor, makeTraceVisitor, friendlyError, extractScriptLine } from './live-patch.js';
 import { detectAPIUsage } from './api-detector.js';
 import { _beginRun, _endRun } from '../runtime/api-registry.js';
 import { initInlineWidgets, inlineWidgetsExtension, toggleInlayHintsEffect, inlayHintsEnabledField } from './inline-widgets.js';
@@ -23,6 +23,8 @@ import { addEditorIcon, removeEditorIcon, updateEditorIconLabel, duplicateEditor
 // Per-subsystem cleanups are no longer imported here — each module self-registers
 // via onReset() and runResetHandlers() runs them all on reset (ADR 008).
 import { runResetHandlers } from '../runtime/reset-registry.js';
+import { emit, clearRunScoped } from '../events/index.js';
+import { eventCompletionSource } from './event-completion.js';
 import { freezeTimers, restoreTimers } from '../runtime/timer-manager.js';
 import {
   initBlockly, getWorkspaceCode, resizeBlockly, workspaceIsEmpty,
@@ -75,6 +77,31 @@ const errorLineField = StateField.define({
           decos = builder.finish();
         }
       }
+    }
+    return decos;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+// ── Execution Trail decorations ───────────────────────────────────────────────
+// Mirrors errorLineField pattern. Lines arrive as Set<number> via setTraceLinesEffect.
+const setTraceLinesEffect = StateEffect.define();
+
+const traceLineField = StateField.define({
+  create: () => Decoration.none,
+  update(decos, tr) {
+    decos = decos.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setTraceLinesEffect)) continue;
+      if (e.value === null) { decos = Decoration.none; continue; }
+      const builder = new RangeSetBuilder();
+      const lines = [...e.value].sort((a, b) => a - b);
+      for (const ln of lines) {
+        if (ln < 1 || ln > tr.state.doc.lines) continue;
+        const line = tr.state.doc.line(ln);
+        builder.add(line.from, line.to, Decoration.mark({ class: 'ar-trace-line' }));
+      }
+      decos = builder.finish();
     }
     return decos;
   },
@@ -215,6 +242,11 @@ export class EditorInstance {
     this._autoExec = localStorage.getItem(`vl-autoexec-${id}`) !== '0';
     this._autoExecTimer = null;
 
+    this._traceEnabled = localStorage.getItem(`vl-trace-${id}`) !== '0';
+    this._traceDirty = new Set();
+    this._traceActive = new Map(); // line → removal-timer id
+    this._traceRAF = null;
+
     this.editorWinId = `win-editor-${id}`;
     this.canvasWinId = `win-canvas-${id}`;
 
@@ -335,6 +367,18 @@ export class EditorInstance {
     consolePopBtn.innerHTML = '<i class="fa-solid fa-arrow-up-right-from-square"></i>';
     consolePopBtn.addEventListener('click', () => this._popoutConsole());
 
+    const traceToggleBtn = document.createElement('button');
+    traceToggleBtn.className = 'ar-console-btn' + (this._traceEnabled ? ' ar-btn-active' : '');
+    traceToggleBtn.title = 'Toggle execution trail';
+    traceToggleBtn.innerHTML = '<i class="fa-solid fa-route"></i>';
+    traceToggleBtn.addEventListener('click', () => {
+      this._traceEnabled = !this._traceEnabled;
+      localStorage.setItem(`vl-trace-${this.id}`, this._traceEnabled ? '1' : '0');
+      traceToggleBtn.classList.toggle('ar-btn-active', this._traceEnabled);
+    });
+    this._traceToggleBtn = traceToggleBtn;
+
+    consoleBtns.appendChild(traceToggleBtn);
     consoleBtns.appendChild(consoleHideBtn);
     consoleBtns.appendChild(consoleClearBtn);
     consoleBtns.appendChild(consolePopBtn);
@@ -392,6 +436,7 @@ export class EditorInstance {
           history({ minDepth: 50, newGroupDelay: 500 }),
           javascript(),
           javascriptLanguage.data.of({ autocomplete: windowMemberCompletionSource }),
+          javascriptLanguage.data.of({ autocomplete: eventCompletionSource }),
           syntaxHighlighting(defaultHighlightStyle),
           lineNumbers(),
           highlightActiveLine(),
@@ -406,6 +451,7 @@ export class EditorInstance {
           highlightSelectionMatches(),
           searchMarksField,
           errorLineField,
+          traceLineField,
           jsLinterExtension,
           inlineWidgetsExtension(),
           paramHintsExtension(),
@@ -413,10 +459,13 @@ export class EditorInstance {
           EditorView.lineWrapping,
           EditorView.updateListener.of((update) => {
             if (!update.docChanged) return;
+            emit('editor:change', { code: update.state.doc.toString() });
             clearTimeout(saveTimer);
-            saveTimer = this._native.setTimeout(
-              () => localStorage.setItem(storageKey, this.cm.state.doc.toString()), 500
-            );
+            saveTimer = this._native.setTimeout(() => {
+              const savedCode = this.cm.state.doc.toString();
+              localStorage.setItem(storageKey, savedCode);
+              emit('editor:save', { code: savedCode });
+            }, 500);
             if (!this._everHadContent && this.cm.state.doc.toString().trim().length > 0)
               this._everHadContent = true;
             if (this._autoExec) {
@@ -750,6 +799,46 @@ export class EditorInstance {
     for (const [name, make] of PER_EDITOR_LOCALS) {
       window[`${ns}_${name}`] = make(this);
     }
+    window[`${ns}_trace`] = (line) => {
+      if (!this._traceEnabled) return;
+      this._traceDirty.add(line);
+      this._scheduleTraceFlush();
+    };
+  }
+
+  _scheduleTraceFlush() {
+    if (this._traceRAF !== null) return;
+    this._traceRAF = requestAnimationFrame(() => this._flushTrace());
+  }
+
+  _flushTrace() {
+    this._traceRAF = null;
+    if (!this._traceDirty.size) return;
+    const lines = new Set(this._traceActive.keys());
+    for (const line of this._traceDirty) {
+      // Cancel existing removal timer so hot lines stay lit
+      const existing = this._traceActive.get(line);
+      if (existing != null) this._native.clearTimeout(existing);
+      const tid = this._native.setTimeout(() => {
+        this._traceActive.delete(line);
+        if (this.cm) {
+          const active = new Set(this._traceActive.keys());
+          this.cm.dispatch({ effects: setTraceLinesEffect.of(active) });
+        }
+      }, 800);
+      this._traceActive.set(line, tid);
+      lines.add(line);
+    }
+    this._traceDirty.clear();
+    if (this.cm) this.cm.dispatch({ effects: setTraceLinesEffect.of(new Set(lines)) });
+  }
+
+  _clearTrace() {
+    if (this._traceRAF !== null) { cancelAnimationFrame(this._traceRAF); this._traceRAF = null; }
+    for (const tid of this._traceActive.values()) this._native.clearTimeout(tid);
+    this._traceActive.clear();
+    this._traceDirty.clear();
+    if (this.cm) this.cm.dispatch({ effects: setTraceLinesEffect.of(null) });
   }
 
   _refreshDraw() {
@@ -919,6 +1008,7 @@ export class EditorInstance {
   }
 
   _onError(e) {
+    emit('session:error', { error: e?.message ?? String(e), line: extractScriptLine(e) });
     this._setStopped();
     const scriptLine = extractScriptLine(e);
     if (scriptLine !== null) {
@@ -978,6 +1068,8 @@ export class EditorInstance {
   }
 
   stopRunning() {
+    emit('session:stop', {});
+    clearRunScoped();
     for (const id of this._intervals.keys()) this._native.clearInterval(id);
     for (const id of this._timeouts.keys()) this._native.clearTimeout(id);
     this._intervals.clear();
@@ -986,6 +1078,7 @@ export class EditorInstance {
       target?.removeEventListener(type, handler, options));
     this._listeners = [];
     this._pausedState = null;
+    this._clearTrace();
     this._setStopped();
   }
 
@@ -1009,8 +1102,10 @@ export class EditorInstance {
   }
 
   reset() {
+    if (this.btnState === 'running' || this.btnState === 'paused') emit('session:stop', {});
     _endRun(); // restore any registerAPI() overrides made during this run
     this.cm.dispatch({ effects: setErrorLineEffect.of(null) });
+    this._clearTrace();
     window.__ar_paused    = false;
     window.__ar_usesAudio = undefined;
     this._pausedState = null;
@@ -1043,8 +1138,10 @@ export class EditorInstance {
 
   // Like reset() but preserves output window and keepAlive Set (for soft/auto-exec re-run).
   _softReset() {
+    if (this.btnState === 'running' || this.btnState === 'paused') emit('session:stop', {});
     _endRun();
     this.cm.dispatch({ effects: setErrorLineEffect.of(null) });
+    this._clearTrace();
     window.__ar_paused    = false;
     window.__ar_usesAudio = undefined;
     this._pausedState = null;
@@ -1125,7 +1222,7 @@ export class EditorInstance {
     // Smart output detection: analyse user code before executing so we only open
     // the output window and start audio when they're actually needed.
     const _apiHints = detectAPIUsage(raw);
-    const _needsCanvas = _apiHints.usesDraw || _apiHints.usesLayer || _apiHints.usesPixi ||
+    const _needsCanvas = _apiHints.usesDraw || _apiHints.usesLayer || _apiHints.usesGetCanvas || _apiHints.usesPixi ||
       _apiHints.usesShaderFX || _apiHints.usesThree ||
       (_apiHints.usesShader && _apiHints.shaderStartCalled) ||
       (_apiHints.usesGLShader && _apiHints.shaderStartCalled);
@@ -1143,13 +1240,17 @@ export class EditorInstance {
 
     // Tag listeners to this editor during synchronous setup
     window.__ar_active_editor_id = this.id;
+    emit('session:start', { code: raw });
     // Expose per-editor containers so shared APIs (Shader) find the right DOM node
     window.__ar_fsContainer   = this.fsContainer;
     window.__ar_canvasWrapper = this.canvasWrapper;
 
     let protected_code;
-    try { protected_code = addInfiniteLoopProtection(raw); }
-    catch (_) { protected_code = raw; }
+    try {
+      const visitors = [makeLoopProtectionVisitor()];
+      if (this._traceEnabled) visitors.push(makeTraceVisitor(this.id));
+      protected_code = transformCode(raw, visitors);
+    } catch (_) { protected_code = raw; }
 
     const ns = `__ar_e${this.id}`;
     const preamble = editorPreamble(this.id);

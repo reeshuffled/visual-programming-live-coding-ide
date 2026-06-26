@@ -535,26 +535,80 @@ Toolbar mirror button (↔): shown when camera is on. Mirrors the main canvas dr
 
 ---
 
+## Capture & Record
+
+Take photos/videos from the webcam or record any output window. Captures land as persistent desktop icons (IndexedDB-backed) and can also download directly.
+
+```js
+// Webcam photo
+const cam = await Camera.open();
+await cam.photo({ name: 'selfie', download: true });  // → .jpg on desktop + download
+
+// Webcam video
+const rec = cam.record({ name: 'clip', fps: 30 });
+rec.stop();  // → .webm on desktop
+
+// Record any output window
+const r = wm.record('win-canvas-1', { fps: 30 });
+wm.stopRecording('win-canvas-1');  // → .webm on desktop
+
+// Snapshot any output window
+wm.snapshot('win-canvas-1');
+wm.snapshot('win-canvas-1', { name: 'hero.png', download: true });
+```
+
+Titlebar 📷 (snapshot) and 🔴/⏹ (record) buttons appear automatically on canvas/shader/camera/video/image windows.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `cam.photo({ name?, download? })` | `Promise<Blob>` | Still from webcam → desktop .jpg |
+| `cam.record({ name?, fps? })` | `Recording` | Webcam video → desktop .webm on `.stop()` |
+| `wm.snapshot(winId, { name?, download? })` | — | Composite all layers → desktop .png |
+| `wm.record(winId, { fps?, name? })` | `Recording` | Record any visual window → desktop .webm |
+| `wm.stopRecording(winId)` | — | Stop in-progress recording |
+| `rec.stop()` | — | Stop a `Recording` |
+| `desktop.addBlob(blob, { name, type, download? })` | `{id,name,type,url}` | Add any blob as persistent desktop icon |
+
+Multi-layer output windows (draw + pixi + shader) are automatically composited into a single WebM. Captures survive page reload. Capture icons are excluded from `.vljson` project exports (IDB blobs don't travel).
+
+---
+
 ## Vision — `vision`
 
 MediaPipe. Camera must be enabled in toolbar. Results at ~10fps.
 
 ```js
-vision.objects()              // → [{label, confidence, cx, cy}, ...]  (COCO classes)
-vision.nearest(label?)        // → {label, confidence, cx, cy} | null
+// Data
+vision.objects()              // → [{label, confidence, cx, cy, bbox:{x,y,width,height}}, ...]  (COCO classes)
+vision.nearest(label?)        // → {label, confidence, cx, cy, bbox} | null
 vision.any(label) / vision.count(label)
 
-vision.hands()                // → [{gesture, confidence, cx, cy}, ...]
-vision.gesture()              // → 'Thumb_Up'|'Open_Palm'|'Closed_Fist'|'Pointing_Up'|'Victory'|'ILoveYou'|'None'|null
+vision.hands()                // → [{gesture, confidence, cx, cy, landmarks}, ...]
+vision.gesture()              // → 'Thumb_Up'|'Open_Palm'|'Closed_Fist'|'Pointing_Up'|'Victory'|'ILoveYou'|null
 
 vision.face()                 // → {expression, cx, cy, landmarks} | null
 vision.expression()           // → 'smile'|'surprise'|'frown'|'mouth_open'|'neutral'|null
 
+vision.pose()                 // → {landmarks: [{x,y,z,visibility}×33]} | null  (lazy-loads PoseLandmarker)
+
 vision.onGesture(name, fn)    // edge-triggered (fires once per appearance)
 vision.onExpression(name, fn)
+
+// Draw overlays (pass ctx or omit to use turtle canvas; auto-mirrors if camera is flipped)
+vision.drawBoxes(ctx?, { color, font, lineWidth, mirror } = {})
+vision.drawFace(ctx?,  { color, pointSize, mirror } = {})
+vision.drawHands(ctx?, { color, lineWidth, pointSize, mirror } = {})
+vision.drawPose(ctx?,  { color, lineWidth, pointSize, minVisibility, mirror } = {})
+
+// Config — call before first vision.pose()/drawPose(); first-run-wins (page refresh to change)
+vision.configure({ pose: { model: 'lite'|'full'|'heavy', numPoses: 1 } })
 ```
 
-cx/cy: canvas-centered coords. cx ∈ [-800,800], cy ∈ [-450,450] (positive=up). Map: `px = cx+800`, `py = 450-cy`.
+`cx`/`cy`: canvas-centered turtle coords. cx ∈ [-800,800], cy ∈ [-450,450] (positive=up).  
+`bbox`: normalized [0,1] relative to video frame — same space as landmark `x`/`y`.  
+`mirror`: `'auto'` (default) mirrors when camera is flipped; `false` always uses raw coords.
+
+Pose landmark indices follow [MediaPipe Pose topology](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) (0=nose … 32=right_foot_index).
 
 ---
 
@@ -574,39 +628,84 @@ video.onBrightness(sourceOrSig, threshold, onEnter, onExit?)
 
 ---
 
-## Sensors — `sensors`
+## Sensors & Device Input
 
-All return signal objects with live getters + `.stream(fn)` + edge triggers.
+Device sensors are bus events (ADR 014). Subscribe with `on()` or poll with `hold()`. All sources are **lazy** — start on first subscriber, stop on last.
 
 ```js
-const m = sensors.mouse()
-// m.x/y (0–1 normalized), m.px/py (px), m.vx/vy/speed, m.left/right/middle
-m.stream(fn) / m.onMove(threshold, onEnter, onExit?) / m.onButton(btn, onDown, onUp?)
+// Keyboard & mouse — see also on('window:key:*') / on('window:mouse:*') in Events section
+on('window:key:down').when({ w: () => y -= 5, s: () => y += 5 });   // dispatch by key
+const keys = hold('window:key:down');   // live Set of held key names
+const mouse = hold('window:mouse:move'); // live { x, y, winId }
 
-const kb = sensors.keyboard()
-// kb.held (Set), kb.last, kb.is(key), kb.any(...keys)
-kb.onKey(key, onDown, onUp?)   // key='*' matches any
+// Device sensors
+on('sensor:gamepad').do(({ index, axes, pressed }) => { … });
+// { index, axes[], buttons[], pressed[] }
 
-const pad = sensors.gamepad(index?)
-// pad.axis(i) -1..1, pad.button(i), pad.pressed(i), pad.connected
-pad.onButton(i, onDown, onUp?) / pad.onAxis(i, threshold, onEnter, onExit?)
+on('sensor:motion').do(({ ax, ay, az, alpha, beta, gamma, magnitude }) => { … });
+on('sensor:shake').when(d => d.magnitude > 20).do(() => { … });
 
-const motion = sensors.motion()  // or: await sensors.requestMotion() (iOS 13+)
-// motion.ax/ay/az (m/s²), motion.gx/gy/gz (deg/s), motion.alpha/beta/gamma, motion.magnitude
-motion.onShake(threshold?, onEnter, onExit?) / motion.onTilt(axis, threshold, onEnter, onExit?)
+on('sensor:geo').do(({ lat, lon, accuracy, speed, heading }) => { … });
+on('sensor:battery').do(({ level, charging }) => { … });
+on('sensor:network').do(({ online, type, downlink, rtt }) => { … });
 
-const geo = sensors.geo({highAccuracy?})
-// geo.lat/lon/altitude/accuracy/speed/heading/ready/error
-geo.stream(fn)
-
-const net = sensors.network()
-// net.online, net.type, net.downlink, net.rtt, net.saveData
-net.onChange(fn)
-
-const bat = await sensors.battery()
-// bat.level (0–1), bat.charging, bat.timeToFull, bat.timeToEmpty
-bat.onChange(fn)
+// Haptics — commandable events
+emit('haptics:vibrate', { pattern: 200 });   // 200ms; or array [on,off,on,…]
+emit('haptics:tap', {});                     // 40ms
+emit('haptics:buzz', { ms: 500 });
+emit('haptics:stop', {});
 ```
+
+---
+
+## WebSerial & GPIO
+
+Talk to Arduino/ESP32/Pico/Teensy via USB. Chrome/Edge only. All events appear in the Event Stream Panel. See [docs/serial.md](docs/serial.md).
+
+`serial:connect` **requires a user gesture** — wire to a button click:
+
+```js
+const win = wm.spawn('Serial', {
+  html: '<button id="b" style="margin:16px;font-size:18px">Connect USB</button>',
+});
+document.getElementById(win)?.querySelector('#b')?.addEventListener('click', () => {
+  emit('serial:connect', { baudRate: 115200 });
+});
+
+on('serial:status').do(({ connected }) => console.log(connected ? 'connected' : 'disconnected'));
+
+// Read — always fires raw line
+on('sensor:serial:data').do(({ line }) => console.log(line));
+
+// GPIO read — fires when default parse matches "PIN:VALUE\n"
+on('gpio:pin').do(({ pin, value }) => {
+  if (pin === 0) draw.bg(`hsl(${value / 4}, 80%, 50%)`);
+});
+
+// GPIO write
+emit('gpio:write', { pin: 13, value: 1 });   // HIGH
+emit('gpio:write', { pin: 13, value: 0 });   // LOW
+
+// Raw write
+emit('serial:write', { data: 'RESET\n' });
+
+// Custom protocol (parse + serialize must be symmetric)
+emit('serial:connect', {
+  baudRate: 115200,
+  parse: line => { try { const {p,v} = JSON.parse(line); return {pin:p,value:v}; } catch { return null; } },
+  serialize: ({pin,value}) => JSON.stringify({p:pin,v:value}) + '\n',
+});
+
+// Binary mode
+emit('serial:connect', { baudRate: 115200, mode: 'binary' });
+on('sensor:serial:data').do(({ bytes }) => { /* Uint8Array */ });
+
+// Disconnect / status
+emit('serial:disconnect', {});
+hold('serial:status').connected  // true | false
+```
+
+Port **survives resets** — connect once, keep across code runs. `serial:disconnect` or page close to clean up.
 
 ---
 
@@ -718,6 +817,74 @@ sig.on(fn)     // register a filtered callback on this signal's scope
 //   All hooks auto-clear when the widget is destroyed (e.g. reset / window close)
 //   cleanupPaints / cleanupSpriteEditors / cleanupAsciiEditors / cleanupDrumpads clear them too
 ```
+
+---
+
+## Events — `on`, `emit`, `any`, `tick`, `hold`
+
+A global reactive event bus. Subscribe to system lifecycle events or user-defined events from
+any subsystem. `on()`/`any()`/`tick()` subscriptions created during a code run are automatically
+cleared on reset; system command handlers persist.
+
+```js
+// ── Subscribe ─────────────────────────────────────────────────────────────────
+const stop = on('beat:tick').do(({ bpm, bar, beat }) => { ... });
+stop(); // unsubscribe
+
+// ── Modifiers (chain before .do()) ───────────────────────────────────────────
+on('beat:tick').every(4).do(fn)              // every 4th occurrence
+on('gesture:detected').within(500).do(fn)    // only if < 500ms since last
+on('beat:tick').after('audio:start').do(fn)  // only after audio starts
+on('beat:bar').when(d => d.bar % 2 === 0).do(fn) // predicate guard
+on('window:key:down').when({ key: 'w' }).do(fn)   // object property filter
+on('window:key:down').when({ w: fnW, s: fnS });    // dispatch by key name (primary field)
+on('window:key:down').when('key', { w: fnW, s: fnS }); // explicit dispatch prop
+
+// ── Interval timer ────────────────────────────────────────────────────────────
+tick(16).do(() => { … });                    // ~60fps; all modifiers available
+tick(500).every(4).do(fn);                   // every 2s (4 × 500ms)
+tick(100).after('audio:start').do(fn);       // only after trigger
+
+// ── Multiple events ───────────────────────────────────────────────────────────
+any('beat:bar', 'gesture:detected').do(fn)  // fires on either event
+
+// ── Held state ────────────────────────────────────────────────────────────────
+on('window:key:down').hold()               // live Set of held primary values (keys)
+on('window:mouse:move').hold()             // live object { x, y, winId }
+hold('window:key:down')                    // memoized global — same Set, persistent
+hold('sensor:motion').magnitude            // latest payload field, or undefined until first fire
+
+// ── Emit ──────────────────────────────────────────────────────────────────────
+emit('my-event', { value: 42 })           // user-defined event
+emit('wm:spawn', { title: 'Pulse' })      // commandable: causes a spawn
+emit('audio:start')                        // commandable: starts transport
+emit('beat:tick', { bpm: 120, beat: 0 }) // fake event (no transport needed)
+emit('haptics:vibrate', { pattern: 200 }) // commandable: actuates navigator.vibrate
+```
+
+### System event namespaces
+
+| Namespace | Sample events |
+|---|---|
+| `beat:*` | `tick` `bar` `phrase` |
+| `audio:*` | `start` `stop` `bpm-change` `level` `note-play` `speech` `word` `say` |
+| `wm:*` | `spawn` `close` `focus` `move` `resize` `maximize` `restore` `show` `hide` |
+| `session:*` | `start` `stop` `reset` `error` |
+| `editor:*` | `change` `save` |
+| `gesture:*` | `detected` `smile` `expression` `face` `object` |
+| `midi:*` | `open` `note:on` `note:off` `cc` `clock` |
+| `camera:*` | `open` `close` `flip` `error` |
+| `sensor:*` | `gamepad` `motion` `shake` `geo` `battery` `network` |
+| `window:key:*` | `down` `up` |
+| `window:mouse:*` | `down` `up` `click` `move` |
+| `note:*` | `type` `char` `done` `change` `cursor` `select` |
+| `haptics:*` | `vibrate` `tap` `buzz` `stop` (commandable) |
+| `shader:*` | `compile` `start` `stop` `uniform` `error` |
+| `pipe:*` | `create` `stage-added` `show` `destroy` |
+| `desktop:*` | `file-added` `file-removed` `file-opened` `icon-clicked` |
+
+Type inside `on('...')` in the editor for autocomplete — shows system catalog + any `emit()`
+strings already in your document.
 
 ---
 
@@ -916,6 +1083,63 @@ ascii.play(['frame 1\nline 2', 'frame 2'], 12);
 
 ---
 
+## Notepad — `Notepad`, `notepad`
+
+Rich-text window for prose, poetry, and kinetic text. Programmatic cursor, selection, insert/delete, color/bold, and animated fake-typing.
+
+```js
+const note = new Notepad({ title: 'Poem', w: 420, h: 340 });
+notepad({ title: 'Quick note' });  // factory shorthand
+```
+
+**Constructor options**: `title`, `x`, `y`, `w` (380), `h` (300), `content` (plain text or HTML).
+
+### Content
+
+| Method/Property | Description |
+|---|---|
+| `note.text` | Getter: plain textContent |
+| `note.html` | Getter: sanitized innerHTML |
+| `note.set(content)` | Replace all content (plain text or HTML) |
+| `note.clear()` | Empty the editor |
+
+### Cursor & Selection (flat char offsets over `textContent`)
+
+| Method | Description |
+|---|---|
+| `note.cursor(pos)` | Move caret to flat offset |
+| `note.select(from, to)` | Select range |
+| `note.insert(text, at?)` | Insert at offset (default: caret) |
+| `note.delete(from, to)` | Delete range |
+| `note.replace(from, to, text)` | Replace range |
+
+### Animated Typing (return Promises)
+
+| Method | Description |
+|---|---|
+| `note.type(text, { cps=20, at? })` | Animate typing, fires `note:char` per char |
+| `note.backspace(n=1, { cps=20 })` | Animate deleting backwards |
+
+### Formatting
+
+| Method | Description |
+|---|---|
+| `note.bold(from?, to?)` | Toggle bold on range (or current selection) |
+| `note.italic(from?, to?)` | Toggle italic |
+| `note.underline(from?, to?)` | Toggle underline |
+| `note.color(col, from?, to?)` | Foreground color |
+| `note.highlight(col, from?, to?)` | Background highlight color |
+
+### Events
+
+`note:type/char/done/change/cursor/select` — see event namespace table. Per-instance: `note.on('char', fn)`.
+
+### Window control
+
+`note.show()` / `note.focus()` / `note.close()`
+
+---
+
 ## Utilities
 
 ```js
@@ -927,9 +1151,6 @@ setTimeout(fn, ms) / clearTimeout(id)
 Color.random()          // random vivid HSL string
 Color.invert(str)       // invert any CSS color
 randUni(lo, hi)         // random float in [lo, hi)
-
-// Keyboard shorthand
-onKey(key, fn)          // keydown handler; key='any' matches all
 
 // Execution
 pause() / resume() / stop()
@@ -976,17 +1197,17 @@ setInterval(() => {
 }, 16);
 ```
 
-### Sensor-reactive particle system
+### Input-reactive particle system
 
 ```js
-const kb = sensors.keyboard();
-const m = sensors.mouse();
+const keys = hold('window:key:down');
+const mouse = hold('window:mouse:move');
 let particles = [];
 
-setInterval(() => {
+tick(16).do(() => {
   draw.alpha(0.1).bg('#000').alpha(1);
-  if (kb.is(' ')) {
-    particles.push({ x: m.px, y: m.py, vx: randUni(-4,4), vy: randUni(-6,-1), life: 1, hue: randUni(0,360) });
+  if (keys.has(' ')) {
+    particles.push({ x: mouse.x, y: mouse.y, vx: randUni(-4,4), vy: randUni(-6,-1), life: 1, hue: randUni(0,360) });
   }
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
@@ -994,7 +1215,7 @@ setInterval(() => {
     if (p.life <= 0) { particles.splice(i,1); continue; }
     draw.alpha(p.life).circle(p.x, p.y, 5, `hsl(${p.hue},90%,65%)`).alpha(1);
   }
-}, 16);
+});
 ```
 
 ### Vision + audio

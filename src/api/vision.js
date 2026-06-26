@@ -3,11 +3,31 @@ import {
   ObjectDetector,
   GestureRecognizer,
   FaceLandmarker,
+  PoseLandmarker,
 } from "@mediapipe/tasks-vision";
 import { onReset } from '../runtime/reset-registry.js';
+import { notify, subscribe } from '../events/index.js';
 
 const WASM_CDN = "https://unpkg.com/@mediapipe/tasks-vision@0.10.35/wasm";
 const MODEL_BASE = "https://storage.googleapis.com/mediapipe-models";
+
+const HAND_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [0,9],[9,10],[10,11],[11,12],
+  [0,13],[13,14],[14,15],[15,16],
+  [0,17],[17,18],[18,19],[19,20],
+  [5,9],[9,13],[13,17],
+];
+
+const POSE_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8],
+  [9,10],
+  [11,12],[11,13],[13,15],[15,17],[15,19],[17,19],
+  [12,14],[14,16],[16,18],[16,20],[18,20],
+  [11,23],[12,24],[23,24],[23,25],[24,26],[25,27],[26,28],
+  [27,29],[28,30],[29,31],[30,32],[27,31],[28,32],
+];
 
 function toTurtle(px, py, vw, vh, cw, ch) {
   const cx = (px / vw) * cw - cw / 2;
@@ -32,21 +52,41 @@ function classifyExpression(blendshapes) {
   return "neutral";
 }
 
-const _cache = { objects: [], hands: [], face: null };
+function _defaultCtx() {
+  return document.getElementById("turtle")?.getContext("2d") ?? null;
+}
 
-const _gestureHandlers = []; // [{gesture, fn, prev}]
-const _expressionHandlers = []; // [{expr, fn, prev}]
+function _applyMirror(ctx, mirror) {
+  if (mirror === 'auto' ? _cameraFlipped : mirror) {
+    ctx.translate(ctx.canvas.width, 0);
+    ctx.scale(-1, 1);
+  }
+}
+
+// Track camera flip state persistently (not run-scoped).
+let _cameraFlipped = false;
+subscribe('camera:flip', ({ mirrored }) => { _cameraFlipped = !!mirrored; }, { persistent: true });
+
+const _cache = { objects: [], hands: [], face: null, pose: null };
+
+const _gestureHandlers = [];
+const _expressionHandlers = [];
 
 let _initPromise = null;
 let _ready = false;
 let _running = false;
 let _rafId = null;
 let _lastDetectionTime = 0;
-const DETECTION_INTERVAL_MS = 100; // ~10fps
+const DETECTION_INTERVAL_MS = 100;
 
 let _objectDetector = null;
 let _gestureRecognizer = null;
 let _faceLandmarker = null;
+
+// Pose: lazy init, configurable before first use.
+let _poseLandmarker = null;
+let _initPosePromise = null;
+let _poseConfig = { model: 'lite', numPoses: 1 };
 
 async function _init() {
   if (_initPromise) return _initPromise;
@@ -82,6 +122,25 @@ async function _init() {
   return _initPromise;
 }
 
+async function _initPose() {
+  if (_initPosePromise) return _initPosePromise;
+  _initPosePromise = (async () => {
+    const wasmFileset = await FilesetResolver.forVisionTasks(WASM_CDN);
+    const modelName = _poseConfig.model === 'heavy' ? 'pose_landmarker_heavy'
+                    : _poseConfig.model === 'full'  ? 'pose_landmarker_full'
+                    : 'pose_landmarker_lite';
+    _poseLandmarker = await PoseLandmarker.createFromOptions(wasmFileset, {
+      baseOptions: {
+        modelAssetPath: `${MODEL_BASE}/pose_landmarker/${modelName}/float16/1/${modelName}.task`,
+        delegate: "GPU",
+      },
+      runningMode: "VIDEO",
+      numPoses: _poseConfig.numPoses ?? 1,
+    });
+  })();
+  return _initPosePromise;
+}
+
 function _loop() {
   if (!_running) return;
   _rafId = requestAnimationFrame(_loop);
@@ -109,21 +168,22 @@ function _loop() {
         return {
           label: d.categories[0]?.categoryName ?? "unknown",
           confidence: d.categories[0]?.score ?? 0,
+          bbox: { x: bb.originX / vw, y: bb.originY / vh, width: bb.width / vw, height: bb.height / vh },
           ...toTurtle(px, py, vw, vh, cw, ch),
         };
       });
+      for (const obj of _cache.objects) {
+        notify('gesture:object', { label: obj.label, confidence: obj.confidence, bbox: obj.bbox });
+      }
     }
-  } catch (_) {
-    /* GPU/stream hiccup — keep last result */
-  }
+  } catch (_) {}
 
   try {
     if (_gestureRecognizer) {
       const r = _gestureRecognizer.recognizeForVideo(video, now);
       _cache.hands = (r.gestures ?? []).map((g, i) => {
         const lm = r.landmarks?.[i] ?? [];
-        let cx = 0,
-          cy = 0;
+        let cx = 0, cy = 0;
         if (lm.length) {
           const wrist = lm[0];
           ({ cx, cy } = toTurtle(wrist.x * vw, wrist.y * vh, vw, vh, cw, ch));
@@ -147,14 +207,22 @@ function _loop() {
         const avgX = lm.reduce((s, p) => s + p.x, 0) / lm.length;
         const avgY = lm.reduce((s, p) => s + p.y, 0) / lm.length;
         const { cx, cy } = toTurtle(avgX * vw, avgY * vh, vw, vh, cw, ch);
-        _cache.face = {
-          expression: classifyExpression(r.faceBlendshapes),
-          cx,
-          cy,
-          landmarks: lm,
-        };
+        _cache.face = { expression: classifyExpression(r.faceBlendshapes), cx, cy, landmarks: lm };
+        notify('gesture:face', { expression: _cache.face.expression, cx, cy, landmarks: lm });
       } else {
         _cache.face = null;
+      }
+    }
+  } catch (_) {}
+
+  try {
+    if (_poseLandmarker) {
+      const r = _poseLandmarker.detectForVideo(video, now);
+      if (r.landmarks?.length) {
+        _cache.pose = { landmarks: r.landmarks[0] };
+        notify('gesture:pose', { landmarks: r.landmarks[0] });
+      } else {
+        _cache.pose = null;
       }
     }
   } catch (_) {}
@@ -164,7 +232,10 @@ function _loop() {
   const currGesture = !g || g === "None" ? null : g;
   for (const h of _gestureHandlers) {
     const active = currGesture === h.gesture;
-    if (active && !h.prev) h.fn();
+    if (active && !h.prev) {
+      notify('gesture:detected', { type: currGesture, hand: _cache.hands[0], confidence: _cache.hands[0]?.confidence ?? 0 });
+      h.fn();
+    }
     h.prev = active;
   }
 
@@ -172,20 +243,33 @@ function _loop() {
   const currExpr = _cache.face?.expression ?? null;
   for (const h of _expressionHandlers) {
     const active = currExpr === h.expr;
-    if (active && !h.prev) h.fn();
+    if (active && !h.prev) {
+      const face = _cache.face;
+      if (currExpr === 'smile') {
+        notify('gesture:smile', { confidence: face?.confidence ?? 0, cx: face?.cx ?? 0, cy: face?.cy ?? 0 });
+      }
+      notify('gesture:expression', { expression: currExpr, confidence: face?.confidence ?? 0, cx: face?.cx ?? 0, cy: face?.cy ?? 0 });
+      h.fn();
+    }
     h.prev = active;
   }
 }
 
 function _ensureStarted() {
   if (_running) return;
+  if (!window.__ar_camera_on) window.__ar_enableCamera?.();
   _running = true;
   if (_ready) {
     _loop();
   } else {
-    _init().then(() => {
-      if (_running) _loop();
-    });
+    _init().then(() => { if (_running) _loop(); });
+  }
+}
+
+function _ensurePoseStarted() {
+  _ensureStarted();
+  if (!_poseLandmarker && !_initPosePromise) {
+    _initPose();
   }
 }
 
@@ -195,61 +279,47 @@ export function preloadVision() {
 
 export function stopVision() {
   _running = false;
-  if (_rafId) {
-    cancelAnimationFrame(_rafId);
-    _rafId = null;
-  }
+  if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
   _cache.objects = [];
   _cache.hands = [];
   _cache.face = null;
+  _cache.pose = null;
   _lastDetectionTime = 0;
   _gestureHandlers.length = 0;
   _expressionHandlers.length = 0;
 }
 
 export const vision = {
-  objects() {
-    _ensureStarted();
-    return _cache.objects;
+  configure(opts = {}) {
+    if (opts.pose && !_initPosePromise) {
+      Object.assign(_poseConfig, opts.pose);
+    }
+    return this;
   },
+
+  objects() { _ensureStarted(); return _cache.objects; },
   nearest(label) {
     _ensureStarted();
     const list = label ? _cache.objects.filter((o) => o.label === label) : _cache.objects;
     if (!list.length) return null;
     return list.reduce((best, o) => (o.confidence > best.confidence ? o : best));
   },
-  all(label) {
-    _ensureStarted();
-    return _cache.objects.filter((o) => o.label === label);
-  },
-  count(label) {
-    _ensureStarted();
-    return _cache.objects.filter((o) => o.label === label).length;
-  },
-  any(label) {
-    _ensureStarted();
-    return _cache.objects.some((o) => o.label === label);
-  },
+  all(label)   { _ensureStarted(); return _cache.objects.filter((o) => o.label === label); },
+  count(label) { _ensureStarted(); return _cache.objects.filter((o) => o.label === label).length; },
+  any(label)   { _ensureStarted(); return _cache.objects.some((o) => o.label === label); },
 
-  hands() {
-    _ensureStarted();
-    return _cache.hands;
-  },
-  gesture() {
+  hands()    { _ensureStarted(); return _cache.hands; },
+  gesture()  {
     _ensureStarted();
     if (!_cache.hands.length) return null;
     const g = _cache.hands[0].gesture;
     return g === "None" ? null : g;
   },
 
-  face() {
-    _ensureStarted();
-    return _cache.face;
-  },
-  expression() {
-    _ensureStarted();
-    return _cache.face?.expression ?? null;
-  },
+  face()       { _ensureStarted(); return _cache.face; },
+  expression() { _ensureStarted(); return _cache.face?.expression ?? null; },
+
+  pose() { _ensurePoseStarted(); return _cache.pose; },
 
   onGesture(gesture, fn) {
     _ensureStarted();
@@ -261,7 +331,98 @@ export const vision = {
     _expressionHandlers.push({ expr, fn, prev: false });
     return this;
   },
+
+  drawBoxes(ctx, { color = 'lime', font = '14px sans-serif', lineWidth = 2, mirror = 'auto' } = {}) {
+    _ensureStarted();
+    if (!ctx) ctx = _defaultCtx();
+    if (!ctx) return;
+    const { width: cw, height: ch } = ctx.canvas;
+    ctx.save();
+    _applyMirror(ctx, mirror);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.font = font;
+    ctx.lineWidth = lineWidth;
+    for (const obj of _cache.objects) {
+      const { bbox } = obj;
+      if (!bbox) continue;
+      const x = bbox.x * cw, y = bbox.y * ch, w = bbox.width * cw, h = bbox.height * ch;
+      ctx.strokeRect(x, y, w, h);
+      ctx.fillText(`${obj.label} ${(obj.confidence * 100).toFixed(0)}%`, x + 2, y - 4);
+    }
+    ctx.restore();
+  },
+
+  drawFace(ctx, { color = 'cyan', pointSize = 1.5, mirror = 'auto' } = {}) {
+    _ensureStarted();
+    if (!ctx) ctx = _defaultCtx();
+    if (!ctx || !_cache.face) return;
+    const { width: cw, height: ch } = ctx.canvas;
+    ctx.save();
+    _applyMirror(ctx, mirror);
+    ctx.fillStyle = color;
+    for (const lm of _cache.face.landmarks) {
+      ctx.beginPath();
+      ctx.arc(lm.x * cw, lm.y * ch, pointSize, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  },
+
+  drawHands(ctx, { color = 'yellow', lineWidth = 2, pointSize = 4, mirror = 'auto' } = {}) {
+    _ensureStarted();
+    if (!ctx) ctx = _defaultCtx();
+    if (!ctx || !_cache.hands.length) return;
+    const { width: cw, height: ch } = ctx.canvas;
+    ctx.save();
+    _applyMirror(ctx, mirror);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = lineWidth;
+    for (const hand of _cache.hands) {
+      const lm = hand.landmarks;
+      if (!lm?.length) continue;
+      for (const [a, b] of HAND_CONNECTIONS) {
+        ctx.beginPath();
+        ctx.moveTo(lm[a].x * cw, lm[a].y * ch);
+        ctx.lineTo(lm[b].x * cw, lm[b].y * ch);
+        ctx.stroke();
+      }
+      for (const p of lm) {
+        ctx.beginPath();
+        ctx.arc(p.x * cw, p.y * ch, pointSize, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  },
+
+  drawPose(ctx, { color = 'magenta', lineWidth = 2, pointSize = 4, minVisibility = 0.5, mirror = 'auto' } = {}) {
+    _ensurePoseStarted();
+    if (!ctx) ctx = _defaultCtx();
+    if (!ctx || !_cache.pose) return;
+    const { width: cw, height: ch } = ctx.canvas;
+    const lm = _cache.pose.landmarks;
+    ctx.save();
+    _applyMirror(ctx, mirror);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = lineWidth;
+    for (const [a, b] of POSE_CONNECTIONS) {
+      if ((lm[a].visibility ?? 1) < minVisibility || (lm[b].visibility ?? 1) < minVisibility) continue;
+      ctx.beginPath();
+      ctx.moveTo(lm[a].x * cw, lm[a].y * ch);
+      ctx.lineTo(lm[b].x * cw, lm[b].y * ch);
+      ctx.stroke();
+    }
+    for (const p of lm) {
+      if ((p.visibility ?? 1) < minVisibility) continue;
+      ctx.beginPath();
+      ctx.arc(p.x * cw, p.y * ch, pointSize, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  },
 };
 
-// Register teardown with the reset registry (ADR 008).
 onReset(stopVision);

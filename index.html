@@ -62,6 +62,27 @@
       }
       nav li.sep:hover { background: #ccc; }
       nav li.sep:active { transform: none; box-shadow: none; }
+      nav ul li[data-tip] { position: relative; }
+      nav ul li[data-tip]::after {
+        content: attr(data-tip);
+        position: absolute;
+        top: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1e1e2e;
+        color: #cdd6f4;
+        font-size: 11px;
+        font-family: Arial, sans-serif;
+        white-space: nowrap;
+        padding: 3px 7px;
+        border-radius: 5px;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.1s;
+        z-index: 99999;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+      }
+      nav ul li[data-tip]:hover::after { opacity: 1; }
       .btn-green {
         background: #2e7d32 !important; color: #fff !important;
         box-shadow: 0 4px 0 #1a4d1d, inset 0 1px 0 rgba(255,255,255,0.15) !important;
@@ -391,6 +412,10 @@
 
       /* ── Error line highlight ────────────────────────────────────────────── */
       .ar-error-line { background: rgba(255,60,60,0.18); text-decoration: underline wavy red; }
+
+      /* ── Execution trail highlight ───────────────────────────────────────── */
+      @keyframes ar-trace-fade { from { background: rgba(80,200,255,0.45); } to { background: rgba(80,200,255,0.08); } }
+      .ar-trace-line { background: rgba(80,200,255,0.18); animation: ar-trace-fade 0.8s ease-out; }
 
       /* ── Param hints tooltip ─────────────────────────────────────────────── */
       .ar-param-hint {
@@ -770,16 +795,17 @@ s.start();</div>
     <nav>
       <ul>
         <li class="sep"></li>
-        <li id="newEditorBtn" title="New Editor"><i class="fa-solid fa-file-code"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newToolkitBtn" title="New Toolkit"><i class="fa-solid fa-toolbox"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="filesBtn" title="File Browser"><i class="fa-solid fa-folder-open"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newVizBtn" title="New Visualizer"><i class="fa-solid fa-wave-square"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newEqBtn" title="New EQ Widget"><i class="fa-solid fa-sliders"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newDrumpadBtn" title="New Drum Pad"><i class="fa-solid fa-drum"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newSpriteEditorBtn" title="New Sprite Editor"><i class="fa-solid fa-paintbrush"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newPaintBtn" title="New Paint Canvas"><i class="fa-solid fa-paint-roller"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newAsciiEditorBtn" title="New ASCII Editor"><i class="fa-solid fa-terminal"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="newSensorBtn" title="New Sensor Monitor" class="has-dropdown" style="position:relative;">
+        <li id="newEditorBtn" data-tip="New Editor"><i class="fa-solid fa-file-code"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newToolkitBtn" data-tip="New Toolkit"><i class="fa-solid fa-toolbox"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="filesBtn" data-tip="File Browser"><i class="fa-solid fa-folder-open"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newVizBtn" data-tip="New Visualizer"><i class="fa-solid fa-wave-square"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newEqBtn" data-tip="New EQ Widget"><i class="fa-solid fa-sliders"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newDrumpadBtn" data-tip="New Drum Pad"><i class="fa-solid fa-drum"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newPianoBtn" data-tip="New Piano"><i class="fa-solid fa-music"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newSpriteEditorBtn" data-tip="New Pixel Art"><i class="fa-solid fa-border-all"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newPaintBtn" data-tip="New Paint Canvas"><i class="fa-solid fa-paintbrush"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newAsciiEditorBtn" data-tip="New ASCII Editor"><i class="fa-solid fa-font"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newSensorBtn" data-tip="New Sensor Monitor" class="has-dropdown" style="position:relative;">
           <i class="fa-solid fa-gauge-high"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i>
           <ul class="toolbar-dropdown" id="sensorDropdown">
             <li data-source="motion"><i class="fa-solid fa-mobile-screen-button" style="width:14px;"></i> Motion</li>
@@ -788,23 +814,23 @@ s.start();</div>
             <li data-source="battery"><i class="fa-solid fa-battery-half" style="width:14px;"></i> Battery</li>
           </ul>
         </li>
-        <li id="runAllBtn" title="Run All Editors"><i class="fa-solid fa-play"></i><i class="fa-solid fa-layer-group" style="font-size:8px;margin-left:2px;"></i></li>
+        <li id="runAllBtn" data-tip="Run All Editors"><i class="fa-solid fa-play"></i><i class="fa-solid fa-layer-group" style="font-size:8px;margin-left:2px;"></i></li>
         <li id="micToggle" style="display:none;"><i class="fa-solid fa-microphone-slash"></i></li>
-        <li id="newMicVizBtn" title="New Mic Visualizer" style="display:none;"><i class="fa-solid fa-microphone"></i><i class="fa-solid fa-chart-simple" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="newMicVizBtn" data-tip="New Mic Visualizer" style="display:none;"><i class="fa-solid fa-microphone"></i><i class="fa-solid fa-chart-simple" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
         <li id="cameraToggle" style="display:none;"><i class="fa-solid fa-video-slash"></i></li>
         <li id="cameraWrapper" class="no-btn" style="display:none;">
           Camera: <select id="cameraSelect"></select>
         </li>
-        <li id="newCamVizBtn" title="New Camera Window" style="display:none;"><i class="fa-solid fa-video"></i><i class="fa-solid fa-window-restore" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
-        <li id="galleryBtn" title="Demo Gallery" style="margin-left:auto;"><i class="fa-solid fa-film"></i></li>
-        <li id="helpBtn" title="API Quick Reference"><i class="fa-solid fa-circle-question"></i></li>
-        <li id="saveProjectBtn" title="Export project"><i class="fa-solid fa-download"></i></li>
-        <li id="loadProjectBtn" title="Import project"><i class="fa-solid fa-upload"></i></li>
-        <li id="shareProjectBtn" title="Copy embed URL (entire desktop)"><i class="fa-solid fa-share-nodes"></i></li>
-        <li id="undoWinBtn" title="Undo window layout (position/size/visibility)" style="opacity:0.4"><i class="fa-solid fa-rotate-left"></i></li>
-        <li id="redoWinBtn" title="Redo window layout (position/size/visibility)" style="opacity:0.4"><i class="fa-solid fa-rotate-right"></i></li>
-        <li id="closeAllWinsBtn" title="Close all windows"><i class="fa-solid fa-rectangle-xmark"></i></li>
-        <li id="fullscreenBtn" title="Fullscreen (F11)"><i class="fa-solid fa-expand"></i></li>
+        <li id="newCamVizBtn" data-tip="New Camera Window" style="display:none;"><i class="fa-solid fa-video"></i><i class="fa-solid fa-window-restore" style="font-size:8px;margin-left:1px;"></i><i class="fa-solid fa-plus" style="font-size:7px;vertical-align:super;margin-left:1px;"></i></li>
+        <li id="galleryBtn" data-tip="Demo Gallery" style="margin-left:auto;"><i class="fa-solid fa-images"></i></li>
+        <li id="helpBtn" data-tip="API Quick Reference"><i class="fa-solid fa-circle-question"></i></li>
+        <li id="saveProjectBtn" data-tip="Export project"><i class="fa-solid fa-download"></i></li>
+        <li id="loadProjectBtn" data-tip="Import project"><i class="fa-solid fa-upload"></i></li>
+        <li id="shareProjectBtn" data-tip="Copy embed URL (entire desktop)"><i class="fa-solid fa-share-nodes"></i></li>
+        <li id="undoWinBtn" data-tip="Undo window layout" style="opacity:0.4"><i class="fa-solid fa-rotate-left"></i></li>
+        <li id="redoWinBtn" data-tip="Redo window layout" style="opacity:0.4"><i class="fa-solid fa-rotate-right"></i></li>
+        <li id="closeAllWinsBtn" data-tip="Close all windows"><i class="fa-solid fa-rectangle-xmark"></i></li>
+        <li id="fullscreenBtn" data-tip="Fullscreen (F11)"><i class="fa-solid fa-expand"></i></li>
       </ul>
     </nav>
 

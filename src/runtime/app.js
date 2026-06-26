@@ -9,9 +9,13 @@ import { GLShader, GLSL_PRESETS } from "../api/glsl-shader.js";
 import { initPixi, PIXI } from "../api/pixi.js";
 import { AudioViz, SpectrogramCanvas, PianoRollViz, EQWidget, cleanupViz } from "../api/viz.js";
 import { Drumpad } from "../api/drumpad.js";
+import { Piano, cleanupPianos } from "../api/piano.js";
+import { Notepad } from "../api/notepad.js";
+import { Recording, recordStream, compositeCanvasStream } from "../api/recorder.js";
 import { Media, cleanupMedia } from "../api/media.js";
 import { VideoSignalAPI, cleanupVideoSignal } from "../api/video-signal.js";
-import { SensorsAPI, cleanupSensors } from "../api/sensors.js";
+import "../api/device-sources.js"; // lazy device event sources (no exported API)
+import "../api/serial.js";         // WebSerial + GPIO on the bus (ADR 020, no window API)
 import { DesktopAPI, initDesktop, cleanupDesktop, addFolderIcon } from "../api/desktop-files.js";
 import { initDOMCaptures, captureWindow as _captureWindow, cleanupCaptures } from "../editor/editor-capture.js";
 import { pipe, Source, cleanupPipelines } from "../api/render-pipeline.js";
@@ -38,6 +42,9 @@ import { external, cleanupExternal } from "../api/external.js";
 import { statusBar, cleanupStatusBar } from "../api/status-bar.js";
 import { EditorInstance } from "../editor/editor-instance.js";
 import { saveProject, loadProject, serializeProject, applyProject } from "../api/project.js";
+import { on, emit, any, tick, hold, registerCommand } from "../events/index.js";
+import { openEventPanel } from "../api/event-panel.js";
+import "../api/input.js"; // keyboard + mouse → bus (must load after events/index.js)
 
 // ── Capture native timer/event functions before any user-code patching ────────
 const _nativeSetInterval  = window.setInterval.bind(window);
@@ -58,7 +65,7 @@ const nativeTimers = {
 // of truth. Users call registerAPI() to override or extend any built-in.
 _registerBuiltin('vision',   vision);
 _registerBuiltin('video',    VideoSignalAPI);
-_registerBuiltin('sensors',  SensorsAPI);
+// sensors global removed — use on('sensor:*') / hold('sensor:*') / emit('haptics:*') instead
 _registerBuiltin('desktop',  DesktopAPI);
 _registerBuiltin('audio',    audio);
 _registerBuiltin('Shader',   Shader);
@@ -79,6 +86,14 @@ _registerBuiltin('SpectrogramCanvas', SpectrogramCanvas);
 _registerBuiltin('PianoRollViz',      PianoRollViz);
 _registerBuiltin('EQWidget',          EQWidget);
 _registerBuiltin('Drumpad',           Drumpad);
+_registerBuiltin('Piano',             Piano);
+_registerBuiltin('Notepad',           Notepad);
+_registerBuiltin('notepad',           (opts) => new Notepad(opts));
+_registerBuiltin('Recording',         Recording);
+_registerBuiltin('recordStream',      recordStream);
+_registerBuiltin('compositeCanvasStream', compositeCanvasStream);
+_registerBuiltin('recordWindow',      (winId, opts) => window.wm?.record(winId, opts));
+_registerBuiltin('snapshot',          (winId, opts) => window.wm?.snapshot(winId, opts));
 _registerBuiltin('Media',    Media);
 _registerBuiltin('pat',     (str, inst, opts) => audio.pat(str, inst, opts));
 _registerBuiltin('pattern', (str, inst, opts) => audio.pattern(str, inst, opts));
@@ -100,12 +115,12 @@ class Color {
   }
 }
 _registerBuiltin('Color', Color);
-_registerBuiltin('onKey', (key, fn) => document.addEventListener("keydown", (e) => {
-  const el = document.activeElement;
-  if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.isContentEditable)) return;
-  if (window.__ar_paused) return;
-  if (key === "any" || e.key === key) fn(e);
-}));
+_registerBuiltin('on',      on);
+_registerBuiltin('emit',    emit);
+_registerBuiltin('any',     any);
+_registerBuiltin('tick',    tick);
+_registerBuiltin('hold',    hold);
+_registerBuiltin('monitor', openEventPanel);
 _registerBuiltin('randUni', (lo, hi) => Math.random() * (hi - lo) + lo);
 // Expose registerAPI to user code so plugins and snippets can extend the platform.
 _registerBuiltin('registerAPI', registerAPI);
@@ -205,6 +220,18 @@ window.onload = () => {
   window.__ar_widgetRestorers['drumpad'] = (s) => new Drumpad({
     title: s.title, x: s.x, y: s.y, w: s.w, h: s.h,
     bpm: s.widgetState?.bpm, patterns: s.widgetState?.patterns,
+    _desktopIconId: s.widgetState?._desktopIconId,
+  });
+  window.__ar_widgetRestorers['piano'] = (s) => new Piano({
+    title: s.title, x: s.x, y: s.y, w: s.w, h: s.h,
+    preset: s.widgetState?.preset, bpm: s.widgetState?.bpm,
+    duration: s.widgetState?.duration, baseOctave: s.widgetState?.baseOctave,
+    octaves: s.widgetState?.octaves, steps: s.widgetState?.steps,
+    _desktopIconId: s.widgetState?._desktopIconId,
+  });
+  window.__ar_widgetRestorers['note'] = (s) => new Notepad({
+    title: s.title, x: s.x, y: s.y, w: s.w, h: s.h,
+    content: s.widgetState?.content,
     _desktopIconId: s.widgetState?._desktopIconId,
   });
   window.__ar_widgetRestorers['eq'] = (s) => new EQWidget({
@@ -744,6 +771,18 @@ window.onload = () => {
     });
   });
 
+  // ── "New Piano" button ────────────────────────────────────────────────────
+  document.getElementById('newPianoBtn')?.addEventListener('click', () => {
+    const desk = document.getElementById('desktop');
+    const dw = desk.offsetWidth, dh = desk.offsetHeight;
+    const offset = (_vizCount++ % 6) * 24;
+    new Piano({
+      title: 'Piano', w: 560, h: 420,
+      x: Math.round((dw - 560) / 2) + offset,
+      y: Math.round((dh - 420) / 2) + offset,
+    });
+  });
+
   // ── "New Paint" button ────────────────────────────────────────────────────
   document.getElementById('newPaintBtn')?.addEventListener('click', () => {
     const desk = document.getElementById('desktop');
@@ -783,7 +822,7 @@ window.onload = () => {
     const desk = document.getElementById('desktop');
     const dw = desk.offsetWidth, dh = desk.offsetHeight;
     const offset = (_vizCount++ % 6) * 24;
-    const ed = new SpriteEditor({ width: 16, height: 16, scale: 20, title: 'Sprite Editor' });
+    const ed = new SpriteEditor({ width: 16, height: 16, scale: 20, title: 'Pixel Art' });
     // center the window after the wm spawn placed it
     if (ed._winId) {
       const win = document.getElementById(ed._winId);
