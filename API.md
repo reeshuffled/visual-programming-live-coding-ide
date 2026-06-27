@@ -332,7 +332,10 @@ const dp   = audio.drumpad({ title, x, y, w, h })  // 8-pad drum machine + 16-st
 const mic = await audio.mic()           // prompts permission; connect to fx or meter
 audio.level                             // live 0–1 RMS (mic toolbar toggle must be on)
 audio.onLevel(threshold, onEnter, onExit?)   // edge-trigger
-audio.onWord(word, fn) / audio.onSpeech(fn)  // Web Speech API (Chrome/Edge)
+audio.onWord(word, fn)        // fires when that specific word spoken (final only)
+audio.onSpeech(fn)            // fires with full transcript on every utterance (final only)
+audio.onWordStream(fn)        // fn({ word, utteranceId, wordIndex, final }) — every word as it streams
+                              // interim: final=false  committed: final=true  Chrome/Edge only
 audio.say(text, opts?)                       // speechSynthesis; opts: voice,rate,pitch,volume,lang
 audio.voices()                               // → SpeechSynthesisVoice[]
 ```

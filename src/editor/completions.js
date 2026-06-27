@@ -1334,6 +1334,11 @@ audio.start();`,
         hint: "audio.onSpeech(fn) — fires with full transcript string on every recognized utterance.",
       },
       {
+        label: "word stream",
+        code: "audio.onWordStream(({ word, utteranceId, wordIndex, final }) => {\n  console.log(word, final ? '(final)' : '(interim)');\n});",
+        hint: "audio.onWordStream(fn) — fires for every word as it streams in, interim and final. payload: { word, utteranceId, wordIndex, final }",
+      },
+      {
         label: "text to speech",
         code: "audio.say('hello world');",
         hint: "audio.say(text, opts?) — speak text via browser TTS. opts: { voice, rate (0.1–10), pitch (0–2), volume (0–1), lang }",

@@ -19,6 +19,8 @@ let _micLeased = false; // guard: acquire toolbar mic lease once per run
 let _recognition = null;
 const _wordHandlers = new Map();
 const _speechHandlers = [];
+const _wordStreamHandlers = [];
+let _utteranceId = 0;
 
 // ── Beat ticker ───────────────────────────────────────────────────────────────
 // Fires beat:tick / beat:bar / beat:phrase whenever the Tone.js transport runs.
@@ -94,22 +96,30 @@ function _ensureRecognition() {
   if (!SR) { console.warn('Web Speech API not supported in this browser'); return null; }
   const r = new SR();
   r.continuous = true;
-  r.interimResults = false;
+  r.interimResults = true;
   r.onresult = (e) => {
-    const transcript = Array.from(e.results)
-      .slice(e.resultIndex)
-      .filter(res => res.isFinal)
-      .map(res => res[0].transcript.trim().toLowerCase())
-      .join(' ');
-    if (!transcript) return;
-    notify('audio:speech', { text: transcript });
-    _speechHandlers.forEach(fn => fn(transcript));
-    transcript.split(/\s+/).forEach(word => {
-      const handlers = _wordHandlers.get(word);
-      if (handlers) {
-        notify('audio:word', { word });
-        handlers.forEach(fn => fn());
-      }
+    const res = e.results[e.resultIndex];
+    const isFinal = res.isFinal;
+    const text = res[0].transcript.trim().toLowerCase();
+    const words = text.split(/\s+/).filter(Boolean);
+
+    if (isFinal) {
+      // existing final-utterance behaviour
+      notify('audio:speech', { text });
+      _speechHandlers.forEach(fn => fn(text));
+      words.forEach(word => {
+        const handlers = _wordHandlers.get(word);
+        if (handlers) { notify('audio:word', { word }); handlers.forEach(fn => fn()); }
+      });
+    }
+
+    // word stream — fires for both interim and final
+    const eventName = isFinal ? 'audio:word:final' : 'audio:word:interim';
+    const uid = isFinal ? ++_utteranceId : _utteranceId;
+    words.forEach((word, wordIndex) => {
+      const payload = { word, utteranceId: uid, wordIndex, final: isFinal };
+      notify(eventName, payload);
+      _wordStreamHandlers.forEach(fn => fn(payload));
     });
   };
   r.onerror = (e) => { if (e.error !== 'no-speech') console.warn('Speech recognition error:', e.error); };
@@ -157,6 +167,7 @@ export function cleanupAudio() {
   }
   _wordHandlers.clear();
   _speechHandlers.length = 0;
+  _wordStreamHandlers.length = 0;
   try { speechSynthesis.cancel(); } catch (_) {}
 }
 
@@ -976,6 +987,13 @@ class AudioAPI {
   // Fires fn with full transcript string on every recognized utterance.
   onSpeech(fn) {
     _speechHandlers.push(fn);
+    _ensureRecognition();
+    return this;
+  }
+
+  // Fires fn({ word, utteranceId, wordIndex, final }) for every interim and final word.
+  onWordStream(fn) {
+    _wordStreamHandlers.push(fn);
     _ensureRecognition();
     return this;
   }
