@@ -19,6 +19,7 @@ import "../api/serial.js";         // WebSerial + GPIO on the bus (ADR 020, no w
 import { DesktopAPI, initDesktop, cleanupDesktop, addFolderIcon } from "../api/desktop-files.js";
 import { initDOMCaptures, captureWindow as _captureWindow, cleanupCaptures } from "../editor/editor-capture.js";
 import { pipe, Source, cleanupPipelines } from "../api/render-pipeline.js";
+import { route } from "../api/route.js";
 import { library, initLibrary, populateLibraryToolkit, populateLibraryBlocks } from "../api/library.js";
 import { initWM } from "../api/wm.js";
 import { installWidgetHistoryKeys } from "../api/widget-history.js";
@@ -74,6 +75,7 @@ _registerBuiltin('GLShader', GLShader);
 _registerBuiltin('GLSL_PRESETS', GLSL_PRESETS);
 _registerBuiltin('pipe',    pipe);
 _registerBuiltin('Source',  Source);
+_registerBuiltin('route',   route);
 _registerBuiltin('PIXI',     PIXI);
 // Vector constructor stubs — used as type hints in Shader JS function params.
 // In the JS function body these are real values; the transpiler maps them to WGSL vec types.

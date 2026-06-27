@@ -339,6 +339,115 @@ audio.voices()                               // → SpeechSynthesisVoice[]
 
 ---
 
+## Route — `route`
+
+Cross-domain signal chain. Typed signal from a source, through composable transforms, to one or more sinks — as explicit data, not implicit code. Run-scoped (cleared on reset). Self-registers `liveOutput` keep-alive while a driver is active.
+
+```js
+// Mic amplitude → oscillator frequency (sub-ms push path)
+const osc = audio.synth();
+route(Source.mic).amplitude.scale(0, 1, 200, 800).to(osc.frequency)
+
+// MIDI CC → shader uniform (push, stateless chain)
+route('midi:cc').filter(e => e.cc === 74).norm(0, 127).to(myShader, 'uCustom.x')
+
+// Camera brightness → shader uniform (RAF pull, bridge retyping)
+route(Source.camera).brightness().scale(0, 1, 0, 10).to(myShader, 'uCustom')
+
+// Berlin Horse optical printing timeline
+route(Source.camera)
+  .tint('#4a0').wait(3)
+  .negative().wait(2)
+  .clearEffects().solarize(0.6).wait(2)
+  .loop().show()
+
+// VJ mutation on beat
+const r = route(Source.camera).show()
+r.on('beat:bar', r => r.toggle('negative'))
+
+// Fan-in: average mic + camera motion
+route(Source.mic).amplitude
+  .mix(route(Source.camera).motion())
+  .smooth(0.8).to(osc.frequency)
+```
+
+### Sources
+
+| Source | Type | Description |
+|---|---|---|
+| `'event:name'` | discrete | Any bus event; value passed as-is |
+| `Source.mic` | continuous | Mic amplitude sampler (requires bridge) |
+| `Source.camera` | frame | Camera feed (delegates to `pipe()` internally) |
+| `() => value` | continuous | Fn called each RAF tick |
+| `video.signal(...)` | continuous | VideoSignal object (duck-typed) |
+| Canvas / video element | frame | DOM element |
+
+### Bridges (mandatory retyping for audio/frame → scalar)
+
+Must be the first method after `route(Source.mic)` or `route(Source.camera)`. Throws if applied to a discrete source.
+
+| Bridge | Input | Output |
+|---|---|---|
+| `.amplitude` | mic/audio | 0–1 scalar |
+| `.brightness()` | camera/video | 0–1 scalar |
+| `.motion()` | camera/video | 0–1 scalar |
+| `.fft()` | audio | Float32Array |
+
+### Scalar transforms
+
+Stateless (allow sub-ms push path on discrete sources): `scale(inMin, inMax, outMin, outMax)`, `norm(min, max)`, `clamp(min, max)`, `invert()`, `threshold(t)`, `gate(min, max)`, `get(prop)`, `filter(pred)`.
+
+Stateful (force RAF driver): `smooth(factor)`, `debounce(ms)`.
+
+### Frame transforms (canvas-route only)
+
+All usable directly in `pipe()` too.
+
+`tint(color)`, `negative()`, `blur(r)`, `hue(deg)`, `solarize(threshold)`, `posterize(levels)`, `duotone(darkColor, lightColor)`, `grain(amount)`, `strobe(fps)`.
+
+### Sinks — `.to(sink, ...)`
+
+| Sink | Behavior |
+|---|---|
+| `fn` | Called with value |
+| `'event:name'` | `notify(event, value)` |
+| `toneSignal` / `AudioParam` | `.value = v` (direct); `{ramp:ms}` opt-in |
+| `shader, 'uCustom.x'` | Read-modify-write swizzle |
+| `shader, 'uCustom'` | `shader.setUniform('uCustom', v)` |
+
+### Temporal control (frame routes)
+
+```js
+r.wait(sec)        // commit current effects; advance timeline by sec
+r.clearEffects()   // remove all named stages (scene boundary)
+r.loop()           // restart timeline on completion
+```
+
+### Live mutation
+
+```js
+r.toggle('negative')    // add if absent, remove if present
+r.remove('negative')    // remove named stage
+r.clear()               // remove all named stages
+```
+
+### Fan-in
+
+```js
+route(src1).amplitude
+  .mix(route(src2).motion(), (a, b) => a * 0.7 + b * 0.3)
+  .to(osc.frequency)
+```
+
+### Route-scoped events
+
+```js
+r.on('beat:bar', (route, payload) => route.toggle('negative'))
+// auto-cleaned when route is destroyed on reset
+```
+
+---
+
 ## Render Pipeline — `pipe`
 
 Fluent visual pipeline. Each stage exposes a canvas the next stage samples — one shared raf loop, auto-cleanup on reset. No manual `captureWindow`, `wm.spawn`, or `setInterval` needed.

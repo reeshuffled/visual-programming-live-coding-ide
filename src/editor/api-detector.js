@@ -34,6 +34,7 @@ export const API_PATTERNS = {
   usesLayer:    /\bgetLayer\s*\(/,
   usesGetCanvas: /\bgetCanvas\s*\(/,
   usesThree:    /\bnew\s+ThreeScene\b|\bTHREE\s*\./,
+  usesRoute:    /\broute\s*\(/,
 };
 
 // ── AST-level precise detection ───────────────────────────────────────────────
@@ -124,6 +125,7 @@ export function detectAPIUsage(code) {
     usesGetCanvas: false,
     usesLayer:    false,
     usesThree:    false,
+    usesRoute:    false,
     shaderStartCalled:    false,
     shaderConstructedOnly: false,
     parseError:   null,

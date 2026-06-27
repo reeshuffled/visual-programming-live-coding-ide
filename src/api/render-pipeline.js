@@ -41,6 +41,7 @@ function _makeHiddenDiv() {
 // without an explicit await at the call site.
 export const Source = Object.freeze({
   camera: Object.freeze({ _src: 'camera' }),
+  mic:    Object.freeze({ _src: 'mic' }),
 });
 
 // ── InputAdapter ──────────────────────────────────────────────────────────────
@@ -488,6 +489,284 @@ class SubtitleStage {
   }
 }
 
+// ── TintStage ────────────────────────────────────────────────────────────────
+// Composites a solid color over the upstream frame using 'multiply' blending,
+// producing a color-tinted image (dark areas stay dark, light areas take the tint).
+
+class TintStage {
+  constructor(upstream, color = '#ffffff') {
+    this._upstream = upstream;
+    this._color    = color;
+    this._canvas   = document.createElement('canvas');
+    this._ctx      = null;
+    this._isShader = false;
+  }
+  _start() {
+    const src = this._upstream._getSource();
+    this._canvas.width  = _srcWidth(src);
+    this._canvas.height = _srcHeight(src);
+    this._ctx = this._canvas.getContext('2d');
+  }
+  read() {
+    if (!this._ctx) return;
+    const src = this._upstream._getSource();
+    if (_isVideo(src) && src.readyState < 2) return;
+    const { width: w, height: h } = this._canvas;
+    this._ctx.globalCompositeOperation = 'source-over';
+    this._ctx.drawImage(src, 0, 0, w, h);
+    this._ctx.globalCompositeOperation = 'multiply';
+    this._ctx.fillStyle = this._color;
+    this._ctx.fillRect(0, 0, w, h);
+    this._ctx.globalCompositeOperation = 'source-over';
+  }
+  set(props) { if (props.color !== undefined) this._color = props.color; }
+  _getSource() { return this._canvas; }
+  get canvas()  { return this._canvas; }
+  _destroy()    { this._canvas.remove(); this._ctx = null; }
+}
+
+// ── NegativeStage ─────────────────────────────────────────────────────────────
+
+class NegativeStage extends FxStage {
+  constructor(upstream) { super(upstream, 'invert(1)'); }
+}
+
+// ── SolarizeStage ─────────────────────────────────────────────────────────────
+// Inverts pixels whose luminance exceeds threshold (optical-printing solarization).
+
+class SolarizeStage {
+  constructor(upstream, threshold = 0.5) {
+    this._upstream  = upstream;
+    this._threshold = threshold;
+    this._canvas    = document.createElement('canvas');
+    this._ctx       = null;
+    this._off       = document.createElement('canvas');
+    this._offCtx    = null;
+    this._isShader  = false;
+  }
+  _start() {
+    const src = this._upstream._getSource();
+    const w = _srcWidth(src), h = _srcHeight(src);
+    this._canvas.width  = w; this._canvas.height  = h;
+    this._off.width     = w; this._off.height     = h;
+    this._ctx    = this._canvas.getContext('2d');
+    this._offCtx = this._off.getContext('2d');
+  }
+  read() {
+    if (!this._ctx) return;
+    const src = this._upstream._getSource();
+    if (_isVideo(src) && src.readyState < 2) return;
+    const w = this._canvas.width, h = this._canvas.height;
+    this._offCtx.drawImage(src, 0, 0, w, h);
+    const d = this._offCtx.getImageData(0, 0, w, h);
+    const p = d.data, t = this._threshold * 255;
+    for (let i = 0; i < p.length; i += 4) {
+      const br = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+      if (br > t) { p[i] = 255 - p[i]; p[i + 1] = 255 - p[i + 1]; p[i + 2] = 255 - p[i + 2]; }
+    }
+    this._ctx.putImageData(d, 0, 0);
+  }
+  set(props) { if (props.threshold !== undefined) this._threshold = props.threshold; }
+  _getSource() { return this._canvas; }
+  get canvas()  { return this._canvas; }
+  _destroy() {
+    this._canvas.remove(); this._off.remove();
+    this._ctx = null; this._offCtx = null;
+  }
+}
+
+// ── PosterizeStage ─────────────────────────────────────────────────────────────
+// Reduces each channel to N discrete levels.
+
+class PosterizeStage {
+  constructor(upstream, levels = 4) {
+    this._upstream = upstream;
+    this._levels   = Math.max(2, levels);
+    this._canvas   = document.createElement('canvas');
+    this._ctx      = null;
+    this._off      = document.createElement('canvas');
+    this._offCtx   = null;
+    this._isShader = false;
+  }
+  _start() {
+    const src = this._upstream._getSource();
+    const w = _srcWidth(src), h = _srcHeight(src);
+    this._canvas.width  = w; this._canvas.height  = h;
+    this._off.width     = w; this._off.height     = h;
+    this._ctx    = this._canvas.getContext('2d');
+    this._offCtx = this._off.getContext('2d');
+  }
+  read() {
+    if (!this._ctx) return;
+    const src = this._upstream._getSource();
+    if (_isVideo(src) && src.readyState < 2) return;
+    const w = this._canvas.width, h = this._canvas.height;
+    this._offCtx.drawImage(src, 0, 0, w, h);
+    const d = this._offCtx.getImageData(0, 0, w, h);
+    const p = d.data, lv = this._levels;
+    const step = 255 / (lv - 1);
+    for (let i = 0; i < p.length; i += 4) {
+      p[i]     = Math.round(Math.round(p[i]     / step) * step);
+      p[i + 1] = Math.round(Math.round(p[i + 1] / step) * step);
+      p[i + 2] = Math.round(Math.round(p[i + 2] / step) * step);
+    }
+    this._ctx.putImageData(d, 0, 0);
+  }
+  set(props) { if (props.levels !== undefined) this._levels = Math.max(2, props.levels); }
+  _getSource() { return this._canvas; }
+  get canvas()  { return this._canvas; }
+  _destroy() {
+    this._canvas.remove(); this._off.remove();
+    this._ctx = null; this._offCtx = null;
+  }
+}
+
+// ── DuotoneStage ──────────────────────────────────────────────────────────────
+// Maps luminance 0→darkColor, 1→lightColor (two-color image).
+
+function _parseHex(color) {
+  if (typeof color === 'string' && color.startsWith('#')) {
+    const h = color.slice(1);
+    if (h.length === 3) return [parseInt(h[0]+h[0],16), parseInt(h[1]+h[1],16), parseInt(h[2]+h[2],16)];
+    if (h.length === 6) return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+  }
+  return [0, 0, 0];
+}
+
+class DuotoneStage {
+  constructor(upstream, darkColor = '#000000', lightColor = '#ffffff') {
+    this._upstream = upstream;
+    this._dark     = _parseHex(darkColor);
+    this._light    = _parseHex(lightColor);
+    this._canvas   = document.createElement('canvas');
+    this._ctx      = null;
+    this._off      = document.createElement('canvas');
+    this._offCtx   = null;
+    this._isShader = false;
+  }
+  _start() {
+    const src = this._upstream._getSource();
+    const w = _srcWidth(src), h = _srcHeight(src);
+    this._canvas.width  = w; this._canvas.height  = h;
+    this._off.width     = w; this._off.height     = h;
+    this._ctx    = this._canvas.getContext('2d');
+    this._offCtx = this._off.getContext('2d');
+  }
+  read() {
+    if (!this._ctx) return;
+    const src = this._upstream._getSource();
+    if (_isVideo(src) && src.readyState < 2) return;
+    const w = this._canvas.width, h = this._canvas.height;
+    this._offCtx.drawImage(src, 0, 0, w, h);
+    const d = this._offCtx.getImageData(0, 0, w, h);
+    const p = d.data;
+    const [dr,dg,db] = this._dark, [lr,lg,lb] = this._light;
+    for (let i = 0; i < p.length; i += 4) {
+      const luma = (0.299*p[i] + 0.587*p[i+1] + 0.114*p[i+2]) / 255;
+      p[i]     = Math.round(dr + (lr - dr) * luma);
+      p[i + 1] = Math.round(dg + (lg - dg) * luma);
+      p[i + 2] = Math.round(db + (lb - db) * luma);
+    }
+    this._ctx.putImageData(d, 0, 0);
+  }
+  set(props) {
+    if (props.darkColor  !== undefined) this._dark  = _parseHex(props.darkColor);
+    if (props.lightColor !== undefined) this._light = _parseHex(props.lightColor);
+  }
+  _getSource() { return this._canvas; }
+  get canvas()  { return this._canvas; }
+  _destroy() {
+    this._canvas.remove(); this._off.remove();
+    this._ctx = null; this._offCtx = null;
+  }
+}
+
+// ── GrainStage ────────────────────────────────────────────────────────────────
+// Adds per-pixel luminance noise (film grain).
+
+class GrainStage {
+  constructor(upstream, amount = 0.15) {
+    this._upstream = upstream;
+    this._amount   = amount;
+    this._canvas   = document.createElement('canvas');
+    this._ctx      = null;
+    this._off      = document.createElement('canvas');
+    this._offCtx   = null;
+    this._isShader = false;
+  }
+  _start() {
+    const src = this._upstream._getSource();
+    const w = _srcWidth(src), h = _srcHeight(src);
+    this._canvas.width  = w; this._canvas.height  = h;
+    this._off.width     = w; this._off.height     = h;
+    this._ctx    = this._canvas.getContext('2d');
+    this._offCtx = this._off.getContext('2d');
+  }
+  read() {
+    if (!this._ctx) return;
+    const src = this._upstream._getSource();
+    if (_isVideo(src) && src.readyState < 2) return;
+    const w = this._canvas.width, h = this._canvas.height;
+    this._offCtx.drawImage(src, 0, 0, w, h);
+    const d = this._offCtx.getImageData(0, 0, w, h);
+    const p = d.data, n = this._amount * 255;
+    for (let i = 0; i < p.length; i += 4) {
+      const noise = (Math.random() * 2 - 1) * n;
+      p[i]     = Math.min(255, Math.max(0, p[i]     + noise));
+      p[i + 1] = Math.min(255, Math.max(0, p[i + 1] + noise));
+      p[i + 2] = Math.min(255, Math.max(0, p[i + 2] + noise));
+    }
+    this._ctx.putImageData(d, 0, 0);
+  }
+  set(props) { if (props.amount !== undefined) this._amount = props.amount; }
+  _getSource() { return this._canvas; }
+  get canvas()  { return this._canvas; }
+  _destroy() {
+    this._canvas.remove(); this._off.remove();
+    this._ctx = null; this._offCtx = null;
+  }
+}
+
+// ── StrobeStage ───────────────────────────────────────────────────────────────
+// Alternates between source frame and black at the given fps rate.
+
+class StrobeStage {
+  constructor(upstream, fps = 4) {
+    this._upstream = upstream;
+    this._fps      = fps;
+    this._canvas   = document.createElement('canvas');
+    this._ctx      = null;
+    this._last     = 0;
+    this._on       = true;
+    this._isShader = false;
+  }
+  _start() {
+    const src = this._upstream._getSource();
+    this._canvas.width  = _srcWidth(src);
+    this._canvas.height = _srcHeight(src);
+    this._ctx = this._canvas.getContext('2d');
+  }
+  read() {
+    if (!this._ctx) return;
+    const src = this._upstream._getSource();
+    if (_isVideo(src) && src.readyState < 2) return;
+    const now = performance.now();
+    const halfPeriod = 500 / this._fps;
+    if (now - this._last >= halfPeriod) { this._on = !this._on; this._last = now; }
+    const { width: w, height: h } = this._canvas;
+    if (this._on) {
+      this._ctx.drawImage(src, 0, 0, w, h);
+    } else {
+      this._ctx.fillStyle = '#000';
+      this._ctx.fillRect(0, 0, w, h);
+    }
+  }
+  set(props) { if (props.fps !== undefined) this._fps = props.fps; }
+  _getSource() { return this._canvas; }
+  get canvas()  { return this._canvas; }
+  _destroy()    { this._canvas.remove(); this._ctx = null; }
+}
+
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
 export class Pipeline {
@@ -590,6 +869,166 @@ export class Pipeline {
     this._stages.push(stage);
     notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'subtitle' });
     return this;
+  }
+
+  // ── New visual-effect stage chain methods ────────────────────────────────
+
+  /** Tint the frame by compositing a solid color with 'multiply' blending. */
+  tint(color = '#ffffff', id) {
+    const stage = new TintStage(this._last(), color);
+    stage._id = id ?? `${this._id}-tint-${this._stages.length}`;
+    stage._stageName = 'tint';
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'tint' });
+    return this;
+  }
+
+  /** Invert all pixel values (photographic negative). */
+  negative(id) {
+    const stage = new NegativeStage(this._last());
+    stage._id = id ?? `${this._id}-negative-${this._stages.length}`;
+    stage._stageName = 'negative';
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'negative' });
+    return this;
+  }
+
+  /** Solarize: invert pixels whose luminance exceeds threshold (0–1). */
+  solarize(threshold = 0.5, id) {
+    const stage = new SolarizeStage(this._last(), threshold);
+    stage._id = id ?? `${this._id}-solarize-${this._stages.length}`;
+    stage._stageName = 'solarize';
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'solarize' });
+    return this;
+  }
+
+  /** Posterize: reduce each channel to n discrete levels. */
+  posterize(levels = 4, id) {
+    const stage = new PosterizeStage(this._last(), levels);
+    stage._id = id ?? `${this._id}-posterize-${this._stages.length}`;
+    stage._stageName = 'posterize';
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'posterize' });
+    return this;
+  }
+
+  /** Duotone: map luminance between two colors (darkColor → lightColor). */
+  duotone(darkColor = '#000000', lightColor = '#ffffff', id) {
+    const stage = new DuotoneStage(this._last(), darkColor, lightColor);
+    stage._id = id ?? `${this._id}-duotone-${this._stages.length}`;
+    stage._stageName = 'duotone';
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'duotone' });
+    return this;
+  }
+
+  /** Add film grain (luminance noise). amount: 0–1. */
+  grain(amount = 0.15, id) {
+    const stage = new GrainStage(this._last(), amount);
+    stage._id = id ?? `${this._id}-grain-${this._stages.length}`;
+    stage._stageName = 'grain';
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'grain' });
+    return this;
+  }
+
+  /** Strobe: alternate between source frame and black at fps rate. */
+  strobe(fps = 4, id) {
+    const stage = new StrobeStage(this._last(), fps);
+    stage._id = id ?? `${this._id}-strobe-${this._stages.length}`;
+    stage._stageName = 'strobe';
+    _stageRegistry.set(stage._id, stage);
+    this._stages.push(stage);
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'strobe' });
+    return this;
+  }
+
+  /** CSS blur filter. r: radius in px. */
+  blur(r = 4, id) { return this.fx(`blur(${r}px)`, id); }
+
+  /** CSS hue-rotate filter. deg: degrees. */
+  hue(deg = 0, id) { return this.fx(`hue-rotate(${deg}deg)`, id); }
+
+  // ── Live stage mutation (used by route() for temporal control) ────────────
+
+  /**
+   * Factory: create a stage by type name and args, assign _stageName for mutation.
+   * Internal — used by route() for timeline and toggle/remove/clear.
+   */
+  _createNamedStage(type, args) {
+    const upstream = this._last();
+    switch (type) {
+      case 'tint':      return new TintStage(upstream, ...args);
+      case 'negative':  return new NegativeStage(upstream);
+      case 'solarize':  return new SolarizeStage(upstream, ...args);
+      case 'posterize': return new PosterizeStage(upstream, ...args);
+      case 'duotone':   return new DuotoneStage(upstream, ...args);
+      case 'grain':     return new GrainStage(upstream, ...args);
+      case 'strobe':    return new StrobeStage(upstream, ...args);
+      case 'blur':      return new FxStage(upstream, `blur(${args[0] ?? 4}px)`);
+      case 'hue':       return new FxStage(upstream, `hue-rotate(${args[0] ?? 0}deg)`);
+      case 'ascii':     return new AsciiStage(upstream, args[0] ?? {});
+      case 'pixelate':  return new PixelateStage(upstream, args[0] ?? {});
+      case 'fx':        return new FxStage(upstream, args[0]);
+      default:          throw new Error(`pipe: unknown stage type '${type}'`);
+    }
+  }
+
+  /**
+   * Add a named stage to a RUNNING pipeline (called by route() for live timeline).
+   * Calls stage._start() immediately since the pipeline RAF is already running.
+   */
+  _addNamedStage(type, args) {
+    if (!this._stageArgCache) this._stageArgCache = new Map();
+    this._stageArgCache.set(type, args); // cache for toggle re-add
+    const stage = this._createNamedStage(type, args);
+    const stageId = `${this._id}-${type}-live-${this._stages.length}`;
+    stage._id        = stageId;
+    stage._stageName = type;
+    stage._isShader  = stage._isShader ?? false;
+    _stageRegistry.set(stageId, stage);
+    this._stages.push(stage);
+    if (this._rafId) stage._start(); // pipeline running — init the stage immediately
+    notify('pipe:stage-added', { id: this._id, stageId, stage: type });
+    return stage;
+  }
+
+  /** Remove the most-recently-added stage with the given name. */
+  _removeNamedStage(name) {
+    const idx = this._stages.findLastIndex?.(s => s._stageName === name) ??
+      (() => { let i = this._stages.length - 1; while (i >= 0 && this._stages[i]._stageName !== name) i--; return i; })();
+    if (idx === -1) return;
+    const stage = this._stages.splice(idx, 1)[0];
+    if (stage._id) _stageRegistry.delete(stage._id);
+    try { stage._destroy(); } catch (_) {}
+  }
+
+  /** Toggle: add if absent, remove if present (using cached args from last _addNamedStage). */
+  _toggleNamedStage(name) {
+    const exists = this._stages.some(s => s._stageName === name);
+    if (exists) {
+      this._removeNamedStage(name);
+    } else {
+      const args = this._stageArgCache?.get(name) ?? [];
+      this._addNamedStage(name, args);
+    }
+  }
+
+  /** Remove ALL stages that were added via _addNamedStage (have _stageName set). */
+  _clearNamedStages() {
+    const named = this._stages.filter(s => s._stageName);
+    for (const stage of named) {
+      this._stages.splice(this._stages.indexOf(stage), 1);
+      if (stage._id) _stageRegistry.delete(stage._id);
+      try { stage._destroy(); } catch (_) {}
+    }
   }
 
   _last() {

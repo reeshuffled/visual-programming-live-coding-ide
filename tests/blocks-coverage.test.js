@@ -67,6 +67,7 @@ const TEXT_ONLY_INTENTIONAL = new Set([
 // Known gaps — learner-facing, no blocks path yet. The gate passes today while
 // keeping the backlog visible. When blocks land, move the entry to COVERAGE.
 const BLOCKS_TODO = new Set([
+  'Route',        // cross-domain signal chain (ADR 025) — closure-heavy API; blocks pending
   'Sensors',      // mouse/keyboard/gamepad/motion — high learner value, deserves blocks
   'Haptics',      // sensors.vibrate — small; could fold into a Sensors block set
   'Notepad',      // rich-text window widget — high learner value, blocks path pending

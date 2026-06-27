@@ -1,4 +1,5 @@
 import { onReset } from '../runtime/reset-registry.js';
+import { getLiveRoutes } from './route.js';
 // signal-graph.js — read-only overlay of signal-bus routing
 // Sources: audio.fft, hold('sensor:*'), hold('window:mouse:move'), video.signal(), camera streams
 // Sinks: ThreeScene, Shader, GLShader, pipe()
@@ -97,7 +98,19 @@ class SignalGraphAPI {
   }
 
   show() {
-    const routes = window.__ar_signalRoutes ?? [];
+    // Auto-populate from live route() descriptors (no manual .route() calls needed)
+    const autoRoutes = [];
+    try {
+      for (const r of getLiveRoutes()) {
+        const d = r._descriptor?.();
+        if (d) {
+          const label = d.chain.map(t => t.op).join('→') || undefined;
+          for (const sink of d.sinks) autoRoutes.push({ source: d.source, sink, label });
+        }
+      }
+    } catch (_) {}
+
+    const routes = [...(window.__ar_signalRoutes ?? []), ...autoRoutes];
     const liveNodes = _detectLiveNodes();
     const { svg, width, height } = _buildGraph(routes, liveNodes);
 

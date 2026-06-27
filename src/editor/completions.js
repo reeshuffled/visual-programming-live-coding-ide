@@ -945,6 +945,53 @@ audio.start();`,
     ],
   },
   {
+    name: "Route",
+    commands: [
+      {
+        label: "MIDI → audio param",
+        code: "// MIDI CC 74 → oscillator frequency (sub-ms low-latency path)\nconst osc = new Tone.Oscillator(440, 'sine').toDestination();\nawait audio.start();\nosc.start();\nroute('midi:cc').filter(e => e.cc === 74).norm(0, 127).to(osc.frequency);",
+        hint: "route(eventName) creates a cross-domain signal chain. Discrete → immediate sink runs event-synchronously (sub-ms).",
+        tags: ["route", "midi", "signal", "audio", "chain", "cross-domain"],
+      },
+      {
+        label: "mic → shader uniform",
+        code: "// Mic amplitude → shader uniform with smoothing\nconst sh = new GLShader(`\n  float r = uCustom.x;\n  gl_FragColor = vec4(r, uv.y, 1.0-r, 1.0);\n`).start();\nroute(Source.mic).amplitude.scale(0, 1, 0, 1).smooth(0.8).to(sh, 'uCustom.x');",
+        hint: "route(Source.mic).amplitude bridges mic to a scalar 0–1. .smooth() adds exponential decay (forces RAF driver).",
+        tags: ["route", "mic", "shader", "uniform", "amplitude", "smooth"],
+      },
+      {
+        label: "camera visual effects chain",
+        code: "// Camera with composable visual effects\nroute(Source.camera)\n  .tint('#ff4400')\n  .grain(0.1)\n  .show('Treated Camera', { w: 700, h: 500 });",
+        hint: "route(Source.camera) creates a visual signal chain. Chain .tint() .negative() .solarize() .grain() .strobe() etc.",
+        tags: ["route", "camera", "visual", "tint", "grain", "effects"],
+      },
+      {
+        label: "time-sequenced effects (Berlin Horse)",
+        code: "// Optical-printing style: effects accumulate between wait() calls\nroute(Source.camera)\n  .tint('#4a8f3f').wait(3)\n  .negative().wait(2)\n  .clearEffects().solarize(0.6).wait(2)\n  .loop()\n  .show('Berlin Horse', { w: 700, h: 500 });",
+        hint: "wait(sec) schedules the accumulated effect stack. clearEffects() resets the stack (scene boundary). loop() restarts the timeline.",
+        tags: ["route", "camera", "timeline", "wait", "loop", "solarize", "optical", "effects"],
+      },
+      {
+        label: "event-driven VJ mutation",
+        code: "// VJ pattern: toggle effects on beat events\nconst r = route(Source.camera).grain(0.08).show('VJ', { w: 700, h: 500 });\nr.on('beat:bar',    (r) => r.toggle('negative'));\nr.on('beat:phrase', (r) => r.clearEffects().strobe(8));",
+        hint: "r.on(event, cb) is route-scoped: auto-cleaned when the route is destroyed. r.toggle(name) adds or removes a named effect.",
+        tags: ["route", "camera", "vj", "beat", "toggle", "strobe", "on"],
+      },
+      {
+        label: "fan-in: blend two sources",
+        code: "// Blend mic amplitude + camera motion into one signal\nconst osc = new Tone.Oscillator(440, 'sine').toDestination();\nawait audio.start(); osc.start();\nroute(Source.mic).amplitude\n  .mix(route(Source.camera).motion(), (amp, mot) => amp * 0.5 + mot * 0.5)\n  .scale(0, 1, 200, 800)\n  .to(osc.frequency);",
+        hint: ".mix(src, combineFn?) blends two sources. Default combine = average. Forces RAF pull driver.",
+        tags: ["route", "mix", "fan-in", "mic", "camera", "motion", "blend"],
+      },
+      {
+        label: "camera brightness → event",
+        code: "// Camera brightness drives a bus event\nroute(Source.camera).brightness({ x: 0.5, y: 0.5, radius: 0.1 })\n  .scale(0, 1, 0, 100)\n  .smooth(0.9)\n  .to('scene:brightness');",
+        hint: ".brightness(opts) samples a region of the camera frame. opts: { x, y } normalized center, radius, fps.",
+        tags: ["route", "camera", "brightness", "event", "bus"],
+      },
+    ],
+  },
+  {
     name: "Pipeline",
     commands: [
       {

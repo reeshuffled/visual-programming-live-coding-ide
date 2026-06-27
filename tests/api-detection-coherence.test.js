@@ -28,6 +28,7 @@ const SAMPLES = {
   usesGetCanvas: 'getCanvas(0);',
   usesLayer:    'getLayer(0);',
   usesThree:    'const t = new ThreeScene();',
+  usesRoute:    'route(Source.mic).amplitude.to(osc.frequency);',
 };
 
 // Non-pattern keys the detector adds to its result (AST call-flow + parse meta).
@@ -43,6 +44,7 @@ const CONSUMED = [
 ];
 const DETECTED_UNCONSUMED = [
   'usesSensors', 'usesCamera', 'usesVideo', 'usesVision', 'usesDesktop', 'usesMedia',
+  'usesRoute',  // route() spawns its own wm windows; no separate canvas window needed
 ];
 
 const patternKeys = Object.keys(API_PATTERNS).sort();
