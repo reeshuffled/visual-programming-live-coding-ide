@@ -2277,7 +2277,15 @@ export function initWM(onContentResize) {
     addText(id, text, x, y, opts = {}) {
       const win = getWin(id);
       if (!win) { console.warn('[wm.addText] window not found:', id); return null; }
-      if (!win._ensureTextLayer) { console.warn('[wm.addText] window has no text layer (must be image/video/camera/canvas/shader type):', id); return null; }
+      if (!win._ensureTextLayer) {
+        const body = win.querySelector('.wm-body');
+        if (!body) { console.warn('[wm.addText] window not found:', id); return null; }
+        body.style.position = 'relative';
+        const tl = new TextLayer({ container: body, width: body.clientWidth || 400, height: body.clientHeight || 300 });
+        _textLayers.add(tl);
+        win._ensureTextLayer = () => tl;
+        win._getTextCanvas   = () => tl.canvas;
+      }
       const handle = win._ensureTextLayer().addText(text, x, y, opts, { runScoped: true });
       if (!handle) return null;
 

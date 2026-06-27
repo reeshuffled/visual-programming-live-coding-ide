@@ -1050,6 +1050,7 @@ export class Pipeline {
     });
 
     if (winId) {
+      this.winId = winId;
       const winEl = document.getElementById(winId);
       const body  = winEl?.querySelector('.wm-body');
       if (body) {

@@ -212,6 +212,7 @@ class Route {
 
     // Frame-route state
     this._pipeline    = null;   // the Pipeline instance (frame routes only)
+    this._taps        = [];     // [{event, fn}] registered via .tap()
     this._stageQueue  = [];     // [{op:'add'|'clear', type?, args?}] pending stages
     this._timelineParts = [];   // [{atMs, ops:[]}] committed by wait()
     this._cursor      = 0;      // accumulated ms timeline cursor
@@ -356,9 +357,21 @@ class Route {
 
   // ── Frame-route display ───────────────────────────────────────────────────
 
+  tap(event, fn) {
+    this._assertFrame('tap');
+    this._taps.push({ event, fn });
+    return this;
+  }
+
   show(title, opts) {
     this._assertFrame('show');
     this._buildAndShow(title ?? 'Route', opts);
+    this.winId = this._pipeline?.winId ?? null;
+    const winId = this.winId;
+    for (const { event, fn } of this._taps) {
+      const unsub = subscribe(event, payload => fn(payload, winId));
+      this._subs.push(unsub);
+    }
     return this;
   }
 
