@@ -6,7 +6,7 @@
 import * as Tone from 'tone';
 import { WidgetEvents } from './widget-events.js';
 import { onReset } from '../runtime/reset-registry.js';
-import { notify, registerCommand } from '../events/index.js';
+import { notify, registerCommand, tween } from '../events/index.js';
 import { recordStream, compositeCanvasStream } from './recorder.js';
 import { acquireCamera, acquireMic } from './media-lease.js';
 import { TextLayer } from './text-layer.js';
@@ -2278,7 +2278,28 @@ export function initWM(onContentResize) {
       const win = getWin(id);
       if (!win) { console.warn('[wm.addText] window not found:', id); return null; }
       if (!win._ensureTextLayer) { console.warn('[wm.addText] window has no text layer (must be image/video/camera/canvas/shader type):', id); return null; }
-      return win._ensureTextLayer().addText(text, x, y, opts, { runScoped: true });
+      const handle = win._ensureTextLayer().addText(text, x, y, opts, { runScoped: true });
+      if (!handle) return null;
+
+      const { decay, animate } = opts;
+
+      if (animate) {
+        const { duration = 1000, easing, onDone, ...props } = animate;
+        const styleKeys = ['fontSize', 'rotation', 'kerning', 'opacity'];
+        const entries = Object.entries(props).filter(([k]) => styleKeys.includes(k));
+        const cancel = tween(duration, t => {
+          const patch = {};
+          entries.forEach(([k, [from, to]]) => { patch[k] = from + (to - from) * t; });
+          if (Object.keys(patch).length) handle.setStyle(patch);
+        }, { easing, onDone });
+        handle.cancelAnimate = () => { cancel(); return handle; };
+      }
+
+      if (decay) {
+        tween(decay, t => handle.setStyle({ opacity: 1 - t }), { onDone: () => handle.remove() });
+      }
+
+      return handle;
     },
 
     /** Set a CSS filter on a window body (e.g. 'brightness(2)' to flash it). Pass null/'' to clear. */

@@ -156,6 +156,7 @@ export class TextLayer {
       rotation:   opts.rotation   ?? 0,
       kerning:    opts.kerning    ?? 0,
       curve:      opts.curve      ?? null,
+      opacity:    opts.opacity    ?? 1,
       _runScoped: runScoped,
       _on:        new Map(),
       _div:       null,
@@ -232,7 +233,7 @@ export class TextLayer {
         o.text = String(s); self.#redraw(); return h;
       },
       setStyle(opts) {
-        const keys = ['fontSize','fontFamily','color','bold','italic','align','rotation','kerning','curve'];
+        const keys = ['fontSize','fontFamily','color','bold','italic','align','rotation','kerning','curve','opacity'];
         keys.forEach(k => { if (opts[k] !== undefined) o[k] = opts[k]; });
         self.#updateDiv(o); self.#redraw();
         if (self.#selected === o.id) { self.#panel?.remove(); self.#panel = null; self.#buildPanel(o); }
@@ -245,6 +246,7 @@ export class TextLayer {
         o._on.get(ev).add(fn);
         return h;
       },
+      cancelAnimate() { o._cancelAnimate?.(); return h; },
     };
     return h;
   }
@@ -319,6 +321,7 @@ export class TextLayer {
       `border:1.5px dashed ${sel ? 'rgba(203,166,247,0.85)' : 'transparent'};`,
       'border-radius:3px;box-sizing:border-box;',
       `transform:rotate(${o.rotation}deg);transform-origin:top left;white-space:nowrap;`,
+      `opacity:${o.opacity};`,
     ].join('');
   }
 
