@@ -248,6 +248,23 @@ export function tick(ms) {
   return new TickSelector(ms);
 }
 
+// ── tween() ───────────────────────────────────────────────────────────────────
+// tween(duration, fn(t), { easing?, onDone? }) → cancel
+// Calls fn with t in [0,1] every ~16ms for `duration` ms, then calls onDone.
+// Uses patched window.setInterval so it pauses/cleans with the harness (ADR 027).
+export function tween(duration, fn, { easing = t => t, onDone } = {}) {
+  const start = Date.now();
+  const id = window.setInterval(() => {
+    const raw = Math.min(1, (Date.now() - start) / duration);
+    fn(easing(raw));
+    if (raw >= 1) {
+      window.clearInterval(id);
+      if (onDone) onDone();
+    }
+  }, 16);
+  return () => window.clearInterval(id);
+}
+
 // ── Global hold() ─────────────────────────────────────────────────────────────
 // hold(event) — persistent (non-run-scoped) live-state for an event. Memoized: repeated
 // calls return the same object/Set. Enables inline polling: hold('window:mouse:move').x

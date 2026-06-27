@@ -957,6 +957,15 @@ tick(16).do(() => { … });                    // ~60fps; all modifiers availabl
 tick(500).every(4).do(fn);                   // every 2s (4 × 500ms)
 tick(100).after('audio:start').do(fn);       // only after trigger
 
+// ── Tween ─────────────────────────────────────────────────────────────────────
+const cancel = tween(duration, fn(t), { easing?, onDone? })
+// Calls fn(t) with t in [0,1] over duration ms, then calls onDone. Returns cancel fn.
+// easing: optional function (t)=>t — default linear. Supply any curve:
+//   t => 1-(1-t)**3        // ease-out cubic
+//   t => t*t               // ease-in quadratic
+tween(2000, t => draw.bg(`hsl(0,100%,${t*50}%)`), { onDone: () => draw.clear() });
+tween(6000, t => handle.setStyle({ color: `hsla(40,100%,70%,${1-t})` }), { onDone: () => handle.remove() });
+
 // ── Multiple events ───────────────────────────────────────────────────────────
 any('beat:bar', 'gesture:detected').do(fn)  // fires on either event
 

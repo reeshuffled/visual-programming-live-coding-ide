@@ -1244,6 +1244,11 @@ audio.start();`,
         hint: "Interval loop — tick(ms) returns a composable selector. Modifiers: .every(n), .after(event), .within(ms). Returns a stop handle. Uses patched setInterval so it pauses/cleans like user code.",
       },
       {
+        label: "tween",
+        code: "const cancel = tween(2000, t => {\n  draw.bg(`hsl(0,100%,${t * 50}%)`);\n}, { onDone: () => console.log('done') });",
+        hint: "tween(duration, fn(t), { easing?, onDone? }) — animate t from 0→1 over duration ms, then call onDone. Returns cancel handle. easing: fn(t)=>t, default linear.",
+      },
+      {
         label: "tick + hold keys",
         code: "const keys = hold('window:key:down');\ntick(16).do(() => {\n  if (keys.has('ArrowUp')) y -= 4;\n  if (keys.has('ArrowDown')) y += 4;\n  draw.clear();\n  draw.circle(x, y, 10, 'white');\n});",
         hint: "hold(event) returns a live Set (for key/mouse pairs) or object. Use inside tick for polling held state. Never stale — auto-clears on reset.",

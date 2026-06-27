@@ -43,7 +43,7 @@ import { external, cleanupExternal } from "../api/external.js";
 import { statusBar, cleanupStatusBar } from "../api/status-bar.js";
 import { EditorInstance } from "../editor/editor-instance.js";
 import { saveProject, loadProject, serializeProject, applyProject } from "../api/project.js";
-import { on, emit, any, tick, hold, registerCommand, subscribe } from "../events/index.js";
+import { on, emit, any, tick, hold, tween, registerCommand, subscribe } from "../events/index.js";
 import { openEventPanel } from "../api/event-panel.js";
 import "../api/input.js"; // keyboard + mouse → bus (must load after events/index.js)
 
@@ -122,6 +122,7 @@ _registerBuiltin('emit',    emit);
 _registerBuiltin('any',     any);
 _registerBuiltin('tick',    tick);
 _registerBuiltin('hold',    hold);
+_registerBuiltin('tween',   tween);
 _registerBuiltin('monitor', openEventPanel);
 _registerBuiltin('randUni', (lo, hi) => Math.random() * (hi - lo) + lo);
 // Expose registerAPI to user code so plugins and snippets can extend the platform.
