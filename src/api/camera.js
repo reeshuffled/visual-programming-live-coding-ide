@@ -27,6 +27,10 @@ class CameraSource {
     this.element.playsInline = true;
     this.element.muted = true;
     this.element.srcObject = stream;
+    // Off-DOM <video> fed by a MediaStream does NOT start on autoplay alone —
+    // Chrome leaves it paused (currentTime stuck at 0), so drawImage samples a
+    // blank frame. Kick playback explicitly. Muted + playsInline → no gesture needed.
+    this.element.play().catch(() => {});
   }
   acquire() { this.refs++; }
   release() {

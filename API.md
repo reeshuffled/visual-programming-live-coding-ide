@@ -717,7 +717,7 @@ vision.objects()              // → [{label, confidence, cx, cy, bbox:{x,y,widt
 vision.nearest(label?)        // → {label, confidence, cx, cy, bbox} | null
 vision.any(label) / vision.count(label)
 
-vision.hands()                // → [{gesture, confidence, cx, cy, landmarks}, ...]
+vision.hands()                // → [{gesture, confidence, handedness, cx, cy, landmarks}, ...]  (handedness: 'Left'|'Right'|null)
 vision.gesture()              // → 'Thumb_Up'|'Open_Palm'|'Closed_Fist'|'Pointing_Up'|'Victory'|'ILoveYou'|null
 
 vision.face()                 // → {expression, cx, cy, landmarks} | null
@@ -734,8 +734,9 @@ vision.drawFace(ctx?,  { color, pointSize, mirror } = {})
 vision.drawHands(ctx?, { color, lineWidth, pointSize, mirror } = {})
 vision.drawPose(ctx?,  { color, lineWidth, pointSize, minVisibility, mirror } = {})
 
-// Config — call before first vision.pose()/drawPose(); first-run-wins (page refresh to change)
-vision.configure({ pose: { model: 'lite'|'full'|'heavy', numPoses: 1 } })
+// Config — call before first vision use; first-run-wins (page refresh to change)
+vision.configure({ pose:  { model: 'lite'|'full'|'heavy', numPoses: 1 } })
+vision.configure({ hands: { numHands: 2 } })   // default 1 — track both hands
 
 // Custom source — use any HTMLVideoElement or HTMLCanvasElement instead of the webcam
 vision.source(videoEl)   // e.g. from video.open() or a <video> element

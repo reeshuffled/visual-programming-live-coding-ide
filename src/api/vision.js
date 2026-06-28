@@ -86,6 +86,10 @@ let _objectDetector = null;
 let _gestureRecognizer = null;
 let _faceLandmarker = null;
 
+// Hands: configurable before first use (first-run-wins, like pose). MediaPipe's
+// GestureRecognizer defaults to numHands:1 — bump via vision.configure({ hands }).
+let _handsConfig = { numHands: 1 };
+
 // Pose: lazy init, configurable before first use.
 let _poseLandmarker = null;
 let _initPosePromise = null;
@@ -110,6 +114,7 @@ async function _init() {
           delegate: "GPU",
         },
         runningMode: "VIDEO",
+        numHands: _handsConfig.numHands ?? 1,
       }),
       FaceLandmarker.createFromOptions(wasmFileset, {
         baseOptions: {
@@ -195,6 +200,7 @@ function _loop() {
         return {
           gesture: g[0]?.categoryName ?? "None",
           confidence: g[0]?.score ?? 0,
+          handedness: r.handedness?.[i]?.[0]?.categoryName ?? null,  // 'Left' | 'Right'
           cx,
           cy,
           landmarks: lm,
@@ -299,6 +305,9 @@ export const vision = {
   configure(opts = {}) {
     if (opts.pose && !_initPosePromise) {
       Object.assign(_poseConfig, opts.pose);
+    }
+    if (opts.hands && !_initPromise) {
+      Object.assign(_handsConfig, opts.hands);
     }
     return this;
   },
