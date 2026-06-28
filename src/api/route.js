@@ -100,6 +100,28 @@ function resolveSource(src) {
     return { kind: 'frame', raw: src, label: 'camera' };
   }
 
+  // Source.gaze.{x,y,vx,vy} token (ADR 034) — continuous scalar from vision gaze.
+  // vx/vy need calibration; hold last-valid (default 0) and warn once if uncalibrated.
+  if (src?._src === 'gaze') {
+    const field = src.field;
+    const isScreen = field === 'vx' || field === 'vy';
+    let last = 0, warned = false;
+    return {
+      kind: 'continuous', label: 'gaze.' + field,
+      read: () => {
+        const g = window.vision?.gaze?.();
+        if (!g) return last;
+        const v = g[field];
+        if (isScreen && v == null) {
+          if (!warned) { console.warn(`route(Source.gaze.${field}): gaze not calibrated — holding ${last}. Call vision.calibrate().`); warned = true; }
+          return last;
+        }
+        if (typeof v === 'number') last = v;
+        return last;
+      },
+    };
+  }
+
   // Function → continuous reader
   if (typeof src === 'function') {
     return { kind: 'continuous', read: src, label: 'fn' };
@@ -125,7 +147,7 @@ function resolveSource(src) {
   if (_isVideo(src))  return { kind: 'frame', raw: src, label: 'video' };
 
   throw new Error(
-    'route(): unsupported source — pass a bus event string, Source.mic, Source.camera, ' +
+    'route(): unsupported source — pass a bus event string, Source.mic, Source.camera, Source.gaze.x/.y/.vx/.vy, ' +
     'a signal object (video.signal/audio.signal), a fn, or a canvas/video element.'
   );
 }

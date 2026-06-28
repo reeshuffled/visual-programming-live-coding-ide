@@ -152,6 +152,20 @@ export const SYSTEM_EVENTS = [
   { name: 'gesture:object',     commandable: false, detail: 'object detected by vision',
     payload: '{ label, confidence, bbox }' },
 
+  // ── Gaze (ADR 034) — continuous eye signal, own prefix (not gesture:) ──────
+  { name: 'gaze:move',  commandable: false, detail: 'gaze update each detection cycle — continuous',
+    payload: '{ vx, vy, x, y, dir }' },
+  { name: 'gaze:look',  commandable: false, primary: 'dir', detail: 'gaze direction zone changed',
+    payload: '{ dir }' },
+  { name: 'gaze:blink', commandable: false, detail: 'both eyes blinked',
+    payload: '{}' },
+  { name: 'gaze:wink',  commandable: false, primary: 'eye', detail: 'one eye winked',
+    payload: '{ eye }' },
+  { name: 'gaze:enter', commandable: false, primary: 'target', detail: 'gaze entered a watched region (needs calibration)',
+    payload: '{ target }' },
+  { name: 'gaze:leave', commandable: false, primary: 'target', detail: 'gaze left a watched region',
+    payload: '{ target }' },
+
   // ── Sensors (device hardware) ─────────────────────────────────────────────
   // All sensor sources are lazy — start() runs on first subscriber, stop() on last.
   { name: 'sensor:shake',   commandable: false, detail: 'device shake detected',

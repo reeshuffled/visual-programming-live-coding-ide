@@ -42,6 +42,15 @@ function _makeHiddenDiv() {
 export const Source = Object.freeze({
   camera: Object.freeze({ _src: 'camera' }),
   mic:    Object.freeze({ _src: 'mic' }),
+  // Gaze scalar sub-sources for route() (ADR 034). .x/.y = head-relative
+  // direction (no calibration); .vx/.vy = viewport-pixel screen point (needs
+  // calibration — falls back to a held value while uncalibrated).
+  gaze: Object.freeze({
+    x:  Object.freeze({ _src: 'gaze', field: 'x'  }),
+    y:  Object.freeze({ _src: 'gaze', field: 'y'  }),
+    vx: Object.freeze({ _src: 'gaze', field: 'vx' }),
+    vy: Object.freeze({ _src: 'gaze', field: 'vy' }),
+  }),
 });
 
 // ── InputAdapter ──────────────────────────────────────────────────────────────

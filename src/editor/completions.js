@@ -1112,6 +1112,36 @@ audio.start();`,
         code: "vision.configure({ pose: { model: 'lite', numPoses: 1 } })",
         hint: "Set pose model ('lite'|'full'|'heavy') and numPoses before first vision.pose() call. First-run-wins.",
       },
+      {
+        label: "gaze",
+        code: "vision.gaze()",
+        hint: "Where the user looks — {x, y (dir −1..1), dir, blink, leftClosed, rightClosed, vx, vy} or null. vx/vy are viewport px, null until vision.calibrate().",
+      },
+      {
+        label: "gaze in element",
+        code: "vision.gazeIn(getCanvas())",
+        hint: "Gaze point converted to coordinates local to an element/canvas — {x, y} or null. Needs calibration.",
+      },
+      {
+        label: "calibrate gaze",
+        code: "await vision.calibrate({ points: 9 })",
+        hint: "Run an interactive dot-following calibration so vision.gaze().vx/vy return screen pixels. Resolves true on success.",
+      },
+      {
+        label: "when blink",
+        code: "vision.onBlink(() => {\n  \n});",
+        hint: "Run code when both eyes blink. No calibration needed.",
+      },
+      {
+        label: "when wink",
+        code: "vision.onWink('left', () => {\n  \n});",
+        hint: "Run code when one eye winks ('left' | 'right'). No calibration needed.",
+      },
+      {
+        label: "when gaze in region",
+        code: "vision.onGaze(getCanvas(), (inside) => {\n  \n});",
+        hint: "Fire when gaze enters (inside=true) / leaves (false) an element or {x,y,w,h} viewport rect. Needs calibration. A direction string ('left'/'center'/…) instead registers a calibration-free handler.",
+      },
     ],
   },
   {

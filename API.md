@@ -772,6 +772,16 @@ vision.expression()           // → 'smile'|'surprise'|'frown'|'mouth_open'|'ne
 
 vision.pose()                 // → {landmarks: [{x,y,z,visibility}×33]} | null  (lazy-loads PoseLandmarker)
 
+// Gaze — where the user is looking (ADR 034)
+vision.gaze()                 // → {x, y, dir, blink, leftClosed, rightClosed, vx, vy} | null
+vision.gazeIn(el)             // → {x, y} local to el (viewport gaze point − el rect) | null  (needs calibration)
+vision.calibrated             // → boolean — are vx/vy live?
+await vision.calibrate({ points: 9 })   // interactive dot-follow pass; resolves true on success
+vision.onGaze('left'|'right'|'up'|'down'|'center', fn)   // direction zone — no calibration
+vision.onGaze(el | {x,y,w,h}, (inside) => {})            // region enter/leave — needs calibration
+vision.onBlink(fn)            // both eyes — no calibration
+vision.onWink('left'|'right', fn)   // one eye — no calibration
+
 vision.onGesture(name, fn)    // edge-triggered (fires once per appearance)
 vision.onExpression(name, fn)
 
@@ -794,6 +804,8 @@ vision.source(null)      // revert to webcam
 `cx`/`cy`: canvas-centered turtle coords. cx ∈ [-800,800], cy ∈ [-450,450] (positive=up).  
 `bbox`: normalized [0,1] relative to video frame — same space as landmark `x`/`y`.  
 `mirror`: `'auto'` (default) mirrors when camera is flipped; `false` always uses raw coords.
+
+**Gaze** has two tiers on one object. `x`/`y` (head-relative direction, −1..1), `dir`, `blink`, and wink work with **no calibration**. `vx`/`vy` (browser **viewport pixels**) are `null` until calibration — a browser can't know the camera↔screen geometry, so `vision.calibrate()` (or the 🎯 gaze chip) fits the mapping. Calibration is bound to one person + camera + screen resolution, persisted in `localStorage['vl_gaze_calib']`, and **not** saved into projects. Gaze is a continuous signal: route it with `route(Source.gaze.x)` / `.y` (direction) or `.vx` / `.vy` (screen px) — the `gaze:*` bus events are `gaze:move` (continuous), `gaze:look`, `gaze:blink`, `gaze:wink`, `gaze:enter`/`gaze:leave`.
 
 Pose landmark indices follow [MediaPipe Pose topology](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) (0=nose … 32=right_foot_index).
 

@@ -754,6 +754,39 @@ Blockly.defineBlocksWithJsonArray([
     colour: 180,
     tooltip: 'Nearest detected object — {label, cx, cy, confidence} or null',
   },
+  {
+    type: 'vision_gaze',
+    message0: 'gaze',
+    output: null,
+    colour: 180,
+    tooltip: 'Where the user looks — {x, y, dir, blink, leftClosed, rightClosed, vx, vy} or null',
+  },
+  {
+    type: 'vision_on_gaze',
+    message0: 'when looking %1',
+    args0: [{
+      type: 'field_dropdown', name: 'DIR', options: [
+        ['⬅️ left', 'left'], ['➡️ right', 'right'],
+        ['⬆️ up', 'up'], ['⬇️ down', 'down'], ['🎯 center', 'center'],
+      ],
+    }],
+    message1: 'do %1',
+    args1: [{ type: 'input_statement', name: 'DO' }],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 180,
+    tooltip: 'Run code when gaze direction enters this zone (no calibration needed)',
+  },
+  {
+    type: 'vision_on_blink',
+    message0: 'when blink',
+    message1: 'do %1',
+    args1: [{ type: 'input_statement', name: 'DO' }],
+    previousStatement: null,
+    nextStatement: null,
+    colour: 180,
+    tooltip: 'Run code when both eyes blink',
+  },
 
   // ── Draw ───────────────────────────────────────────────────────────────────
   {
@@ -1929,6 +1962,16 @@ javascriptGenerator.forBlock['vision_face_detected'] = () => ['(vision.face() !=
 javascriptGenerator.forBlock['vision_nearest'] = (b) => {
   const label = b.getFieldValue('LABEL');
   return [`vision.nearest(${JSON.stringify(label)})`, Order.FUNCTION_CALL];
+};
+javascriptGenerator.forBlock['vision_gaze'] = () => ['vision.gaze()', Order.FUNCTION_CALL];
+javascriptGenerator.forBlock['vision_on_gaze'] = (b, g) => {
+  const dir = b.getFieldValue('DIR');
+  const body = g.statementToCode(b, 'DO');
+  return `vision.onGaze(${JSON.stringify(dir)}, () => {\n${body}});\n`;
+};
+javascriptGenerator.forBlock['vision_on_blink'] = (b, g) => {
+  const body = g.statementToCode(b, 'DO');
+  return `vision.onBlink(() => {\n${body}});\n`;
 };
 
 // Draw
@@ -3119,6 +3162,9 @@ export const TOOLBOX = {
         { kind: 'block', type: 'vision_gesture' },
         { kind: 'block', type: 'vision_face_detected' },
         { kind: 'block', type: 'vision_nearest' },
+        { kind: 'block', type: 'vision_gaze' },
+        { kind: 'block', type: 'vision_on_gaze' },
+        { kind: 'block', type: 'vision_on_blink' },
       ],
     },
     {

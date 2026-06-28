@@ -33,5 +33,12 @@
     "desc": "Beat-driven interference rings — showcases on/any/every/when event bus modifiers",
     "file": "reactive-ripples.vljson",
     "tags": ["events", "audio", "draw", "reactive"]
+  },
+  {
+    "id": "gaze-garden",
+    "title": "Gaze Garden",
+    "desc": "Eye-tracking brush — calibrate gaze, then paint by looking; wink to burst, blink to flash",
+    "file": "gaze-garden.vljson",
+    "tags": ["vision", "gaze", "camera", "draw"]
   }
 ]
