@@ -1,0 +1,137 @@
+// shader-layer-base.js — shared non-GPU half of Shader (WebGPU/WGSL) and
+// GLShader (WebGL/GLSL). Extracts the methods and state that were previously
+// duplicated byte-for-byte between the two classes.
+//
+// Factored out by the same logic as ADR 010's mountLayerCanvas — the canvas-mount
+// seam was already extracted; this finishes the job for the audio/bind/uniform half.
+//
+// Subclasses supply: constructor (calls _initBase), _writeUniforms(time) (calls
+// _packAudioCustom() then uploads to GPU), start()/stop()/_destroy() (GPU lifecycle).
+// ShaderLayerBase provides: video-source resolution, set/setUniform, bind/audio-pack,
+// opacity/z, canvas getter, and liveness helpers.
+
+import { readAnalyser, bands } from './analyser-read.js';
+import { resolveDrawable } from './drawable-source.js';
+import { isBandsSignal } from './signal-shape.js';
+import { liveOutput } from '../runtime/keep-alive.js';
+import { notify } from '../events/index.js';
+
+export class ShaderLayerBase {
+  // ── Shared constructor state ─────────────────────────────────────────────
+  // Subclass constructors call this._initBase({z, opacity, container, videoSrc}).
+  _initBase({ z = 30, opacity = 1.0, container = null, videoSrc = null } = {}) {
+    this._z         = z;
+    this._opacity   = opacity;
+    this._container = container;
+    this._canvas    = null;
+    this._custom    = new Float32Array(4);
+    this._uniforms  = {};          // named uniform store for route swizzle reads
+    this._boundSignal   = null;    // audio.signal() obj
+    this._boundAnalyser = null;    // Tone.Analyser | AnalyserNode | 'mic'
+    this._videoSrc  = videoSrc;
+    this._live      = null;        // liveOutput handle
+  }
+
+  // ── Video source ─────────────────────────────────────────────────────────
+
+  // Shared object-form resolver (ADR 006); `?? this._videoSrc` keeps the
+  // permissive passthrough for exotic GPU-uploadable sources (ImageBitmap…).
+  _resolveVideoSrc() {
+    return resolveDrawable(this._videoSrc) ?? this._videoSrc ?? null;
+  }
+
+  video(src) { this._videoSrc = src; return this; }
+
+  // ── Custom vec4 uniform ──────────────────────────────────────────────────
+
+  // Set custom uniform by index (0–3) or whole-array.
+  // Accessible as `custom` in both WGSL and GLSL shader bodies.
+  set(indexOrArray, value) {
+    if (Array.isArray(indexOrArray)) {
+      for (let i = 0; i < 4; i++) this._custom[i] = indexOrArray[i] ?? 0;
+    } else {
+      this._custom[indexOrArray] = value;
+    }
+    notify('shader:uniform', { id: this._id, key: indexOrArray, value });
+    return this;
+  }
+
+  // Named uniform write — makes route().to(shader, 'uCustom.x') work (ADR 025).
+  //
+  // 'uCustom' / 'custom' → unpack {x,y,z,w} into _custom via set(); value is also
+  // stored in _uniforms so route's read-modify-write swizzle
+  //   (`sink._uniforms?.[uname]`) can read the current state before updating one
+  //   component. Other names are stored in _uniforms for forward-compat but only
+  //   reach the GPU if explicitly declared in the shader.
+  //
+  // ⚠️  Mutual exclusion: bind() and setUniform('uCustom') conflict —
+  //   _packAudioCustom() overwrites _custom[0..3] every frame when a source is
+  //   bound, so route-driven setUniform writes will be silently overridden.
+  //   Do not use both on the same shader instance.
+  setUniform(name, val) {
+    if (name === 'uCustom' || name === 'custom') {
+      const v = { x: 0, y: 0, z: 0, w: 0, ...val };
+      this._uniforms.uCustom = v;
+      this.set([v.x, v.y, v.z, v.w]);
+    } else {
+      this._uniforms[name] = val;
+    }
+    return this;
+  }
+
+  // ── Audio binding ────────────────────────────────────────────────────────
+
+  // Bind an audio source → auto-fills custom = [rms, bass, mid, high] every frame.
+  // source: audio.signal() obj | Tone.Analyser | Web Audio AnalyserNode | 'mic'
+  // GLShader overrides to add acquireMicRunScoped() for 'mic' (run-scoped media lease).
+  bind(source) {
+    if (isBandsSignal(source)) {
+      this._boundSignal   = source;
+      this._boundAnalyser = null;
+    } else {
+      this._boundSignal   = null;
+      this._boundAnalyser = source;
+    }
+    return this;
+  }
+
+  // Pack _custom[0..3] = [rms, bass, mid, high] from the bound audio source.
+  // Called at the start of each subclass's _writeUniforms() before GPU upload.
+  _packAudioCustom() {
+    if (this._boundSignal) {
+      const s = this._boundSignal;
+      this._custom[0] = s.value ?? 0;
+      this._custom[1] = s.bass  ?? 0;
+      this._custom[2] = s.mid   ?? 0;
+      this._custom[3] = s.high  ?? 0;
+    } else if (this._boundAnalyser) {
+      const b = bands(readAnalyser(this._boundAnalyser, 32));
+      this._custom[0] = b.value;
+      this._custom[1] = b.bass;
+      this._custom[2] = b.mid;
+      this._custom[3] = b.high;
+    }
+  }
+
+  // ── Canvas style ─────────────────────────────────────────────────────────
+
+  opacity(n) {
+    this._opacity = n;
+    if (this._canvas) this._canvas.style.opacity = String(n);
+    return this;
+  }
+
+  z(n) {
+    this._z = n;
+    if (this._canvas) this._canvas.style.zIndex = String(n);
+    return this;
+  }
+
+  get canvas() { return this._canvas; }
+
+  // ── Liveness helpers ──────────────────────────────────────────────────────
+  // start() calls _registerLive(); error paths + _destroy() call _releaseLive().
+
+  _registerLive() { this._live = liveOutput(this); }
+  _releaseLive()  { this._live?.release(); this._live = null; }
+}

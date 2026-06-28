@@ -27,3 +27,14 @@ export function liveOutput(token) {
     get token() { return token; },
   };
 }
+
+// Read-only accessors — use instead of reading window.__ar_keepAlive directly.
+// editor-instance.js is the sole owner/writer of the Set; everyone else reads via these.
+export function forEachLive(cb) {
+  const set = window.__ar_keepAlive;
+  if (set) for (const obj of set) cb(obj);
+}
+
+export function liveCount() {
+  return window.__ar_keepAlive?.size ?? 0;
+}

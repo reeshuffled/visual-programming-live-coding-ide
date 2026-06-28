@@ -100,7 +100,7 @@ class AsciiStage {
 
     this._offCanvas.width  = cols;
     this._offCanvas.height = rows;
-    this._offCtx = this._offCanvas.getContext('2d');
+    this._offCtx = this._offCanvas.getContext('2d', { willReadFrequently: true });
   }
 
   read() {
@@ -489,6 +489,47 @@ class SubtitleStage {
   }
 }
 
+// ── PixelStageBase ────────────────────────────────────────────────────────────
+// Shared canvas scaffolding for per-pixel image-data stages (solarize/posterize/
+// duotone/grain). Subclasses provide _processPixels(data) and set(props) only.
+
+export class PixelStageBase {
+  constructor(upstream) {
+    this._upstream = upstream;
+    this._canvas   = document.createElement('canvas');
+    this._ctx      = null;
+    this._off      = document.createElement('canvas');
+    this._offCtx   = null;
+    this._isShader = false;
+  }
+  _start() {
+    const src = this._upstream._getSource();
+    const w = _srcWidth(src), h = _srcHeight(src);
+    this._canvas.width = w; this._canvas.height = h;
+    this._off.width    = w; this._off.height    = h;
+    this._ctx    = this._canvas.getContext('2d');
+    this._offCtx = this._off.getContext('2d', { willReadFrequently: true });
+  }
+  read() {
+    if (!this._ctx) return;
+    const src = this._upstream._getSource();
+    if (_isVideo(src) && src.readyState < 2) return;
+    const w = this._canvas.width, h = this._canvas.height;
+    this._offCtx.drawImage(src, 0, 0, w, h);
+    const d = this._offCtx.getImageData(0, 0, w, h);
+    this._processPixels(d.data);
+    this._ctx.putImageData(d, 0, 0);
+  }
+  _processPixels(_data) {}
+  set(_props) {}
+  _getSource() { return this._canvas; }
+  get canvas()  { return this._canvas; }
+  _destroy() {
+    this._canvas.remove(); this._off.remove();
+    this._ctx = null; this._offCtx = null;
+  }
+}
+
 // ── TintStage ────────────────────────────────────────────────────────────────
 // Composites a solid color over the upstream frame using 'multiply' blending,
 // producing a color-tinted image (dark areas stay dark, light areas take the tint).
@@ -534,91 +575,32 @@ class NegativeStage extends FxStage {
 // ── SolarizeStage ─────────────────────────────────────────────────────────────
 // Inverts pixels whose luminance exceeds threshold (optical-printing solarization).
 
-class SolarizeStage {
-  constructor(upstream, threshold = 0.5) {
-    this._upstream  = upstream;
-    this._threshold = threshold;
-    this._canvas    = document.createElement('canvas');
-    this._ctx       = null;
-    this._off       = document.createElement('canvas');
-    this._offCtx    = null;
-    this._isShader  = false;
-  }
-  _start() {
-    const src = this._upstream._getSource();
-    const w = _srcWidth(src), h = _srcHeight(src);
-    this._canvas.width  = w; this._canvas.height  = h;
-    this._off.width     = w; this._off.height     = h;
-    this._ctx    = this._canvas.getContext('2d');
-    this._offCtx = this._off.getContext('2d');
-  }
-  read() {
-    if (!this._ctx) return;
-    const src = this._upstream._getSource();
-    if (_isVideo(src) && src.readyState < 2) return;
-    const w = this._canvas.width, h = this._canvas.height;
-    this._offCtx.drawImage(src, 0, 0, w, h);
-    const d = this._offCtx.getImageData(0, 0, w, h);
-    const p = d.data, t = this._threshold * 255;
+class SolarizeStage extends PixelStageBase {
+  constructor(upstream, threshold = 0.5) { super(upstream); this._threshold = threshold; }
+  _processPixels(p) {
+    const t = this._threshold * 255;
     for (let i = 0; i < p.length; i += 4) {
-      const br = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
-      if (br > t) { p[i] = 255 - p[i]; p[i + 1] = 255 - p[i + 1]; p[i + 2] = 255 - p[i + 2]; }
+      const br = 0.299*p[i] + 0.587*p[i+1] + 0.114*p[i+2];
+      if (br > t) { p[i] = 255-p[i]; p[i+1] = 255-p[i+1]; p[i+2] = 255-p[i+2]; }
     }
-    this._ctx.putImageData(d, 0, 0);
   }
   set(props) { if (props.threshold !== undefined) this._threshold = props.threshold; }
-  _getSource() { return this._canvas; }
-  get canvas()  { return this._canvas; }
-  _destroy() {
-    this._canvas.remove(); this._off.remove();
-    this._ctx = null; this._offCtx = null;
-  }
 }
 
 // ── PosterizeStage ─────────────────────────────────────────────────────────────
 // Reduces each channel to N discrete levels.
 
-class PosterizeStage {
-  constructor(upstream, levels = 4) {
-    this._upstream = upstream;
-    this._levels   = Math.max(2, levels);
-    this._canvas   = document.createElement('canvas');
-    this._ctx      = null;
-    this._off      = document.createElement('canvas');
-    this._offCtx   = null;
-    this._isShader = false;
-  }
-  _start() {
-    const src = this._upstream._getSource();
-    const w = _srcWidth(src), h = _srcHeight(src);
-    this._canvas.width  = w; this._canvas.height  = h;
-    this._off.width     = w; this._off.height     = h;
-    this._ctx    = this._canvas.getContext('2d');
-    this._offCtx = this._off.getContext('2d');
-  }
-  read() {
-    if (!this._ctx) return;
-    const src = this._upstream._getSource();
-    if (_isVideo(src) && src.readyState < 2) return;
-    const w = this._canvas.width, h = this._canvas.height;
-    this._offCtx.drawImage(src, 0, 0, w, h);
-    const d = this._offCtx.getImageData(0, 0, w, h);
-    const p = d.data, lv = this._levels;
-    const step = 255 / (lv - 1);
+class PosterizeStage extends PixelStageBase {
+  constructor(upstream, levels = 4) { super(upstream); this._levels = Math.max(2, levels); }
+  _processPixels(p) {
+    const step = 255 / (this._levels - 1);
     for (let i = 0; i < p.length; i += 4) {
-      p[i]     = Math.round(Math.round(p[i]     / step) * step);
-      p[i + 1] = Math.round(Math.round(p[i + 1] / step) * step);
-      p[i + 2] = Math.round(Math.round(p[i + 2] / step) * step);
+      p[i]   = Math.round(Math.round(p[i]   / step) * step);
+      p[i+1] = Math.round(Math.round(p[i+1] / step) * step);
+      p[i+2] = Math.round(Math.round(p[i+2] / step) * step);
     }
-    this._ctx.putImageData(d, 0, 0);
   }
   set(props) { if (props.levels !== undefined) this._levels = Math.max(2, props.levels); }
-  _getSource() { return this._canvas; }
-  get canvas()  { return this._canvas; }
-  _destroy() {
-    this._canvas.remove(); this._off.remove();
-    this._ctx = null; this._offCtx = null;
-  }
 }
 
 // ── DuotoneStage ──────────────────────────────────────────────────────────────
@@ -633,98 +615,42 @@ function _parseHex(color) {
   return [0, 0, 0];
 }
 
-class DuotoneStage {
+class DuotoneStage extends PixelStageBase {
   constructor(upstream, darkColor = '#000000', lightColor = '#ffffff') {
-    this._upstream = upstream;
-    this._dark     = _parseHex(darkColor);
-    this._light    = _parseHex(lightColor);
-    this._canvas   = document.createElement('canvas');
-    this._ctx      = null;
-    this._off      = document.createElement('canvas');
-    this._offCtx   = null;
-    this._isShader = false;
+    super(upstream);
+    this._dark  = _parseHex(darkColor);
+    this._light = _parseHex(lightColor);
   }
-  _start() {
-    const src = this._upstream._getSource();
-    const w = _srcWidth(src), h = _srcHeight(src);
-    this._canvas.width  = w; this._canvas.height  = h;
-    this._off.width     = w; this._off.height     = h;
-    this._ctx    = this._canvas.getContext('2d');
-    this._offCtx = this._off.getContext('2d');
-  }
-  read() {
-    if (!this._ctx) return;
-    const src = this._upstream._getSource();
-    if (_isVideo(src) && src.readyState < 2) return;
-    const w = this._canvas.width, h = this._canvas.height;
-    this._offCtx.drawImage(src, 0, 0, w, h);
-    const d = this._offCtx.getImageData(0, 0, w, h);
-    const p = d.data;
+  _processPixels(p) {
     const [dr,dg,db] = this._dark, [lr,lg,lb] = this._light;
     for (let i = 0; i < p.length; i += 4) {
       const luma = (0.299*p[i] + 0.587*p[i+1] + 0.114*p[i+2]) / 255;
-      p[i]     = Math.round(dr + (lr - dr) * luma);
-      p[i + 1] = Math.round(dg + (lg - dg) * luma);
-      p[i + 2] = Math.round(db + (lb - db) * luma);
+      p[i]   = Math.round(dr + (lr-dr)*luma);
+      p[i+1] = Math.round(dg + (lg-dg)*luma);
+      p[i+2] = Math.round(db + (lb-db)*luma);
     }
-    this._ctx.putImageData(d, 0, 0);
   }
   set(props) {
     if (props.darkColor  !== undefined) this._dark  = _parseHex(props.darkColor);
     if (props.lightColor !== undefined) this._light = _parseHex(props.lightColor);
-  }
-  _getSource() { return this._canvas; }
-  get canvas()  { return this._canvas; }
-  _destroy() {
-    this._canvas.remove(); this._off.remove();
-    this._ctx = null; this._offCtx = null;
   }
 }
 
 // ── GrainStage ────────────────────────────────────────────────────────────────
 // Adds per-pixel luminance noise (film grain).
 
-class GrainStage {
-  constructor(upstream, amount = 0.15) {
-    this._upstream = upstream;
-    this._amount   = amount;
-    this._canvas   = document.createElement('canvas');
-    this._ctx      = null;
-    this._off      = document.createElement('canvas');
-    this._offCtx   = null;
-    this._isShader = false;
-  }
-  _start() {
-    const src = this._upstream._getSource();
-    const w = _srcWidth(src), h = _srcHeight(src);
-    this._canvas.width  = w; this._canvas.height  = h;
-    this._off.width     = w; this._off.height     = h;
-    this._ctx    = this._canvas.getContext('2d');
-    this._offCtx = this._off.getContext('2d');
-  }
-  read() {
-    if (!this._ctx) return;
-    const src = this._upstream._getSource();
-    if (_isVideo(src) && src.readyState < 2) return;
-    const w = this._canvas.width, h = this._canvas.height;
-    this._offCtx.drawImage(src, 0, 0, w, h);
-    const d = this._offCtx.getImageData(0, 0, w, h);
-    const p = d.data, n = this._amount * 255;
+class GrainStage extends PixelStageBase {
+  constructor(upstream, amount = 0.15) { super(upstream); this._amount = amount; }
+  _processPixels(p) {
+    const n = this._amount * 255;
     for (let i = 0; i < p.length; i += 4) {
-      const noise = (Math.random() * 2 - 1) * n;
-      p[i]     = Math.min(255, Math.max(0, p[i]     + noise));
-      p[i + 1] = Math.min(255, Math.max(0, p[i + 1] + noise));
-      p[i + 2] = Math.min(255, Math.max(0, p[i + 2] + noise));
+      const noise = (Math.random()*2-1)*n;
+      p[i]   = Math.min(255, Math.max(0, p[i]   + noise));
+      p[i+1] = Math.min(255, Math.max(0, p[i+1] + noise));
+      p[i+2] = Math.min(255, Math.max(0, p[i+2] + noise));
     }
-    this._ctx.putImageData(d, 0, 0);
   }
   set(props) { if (props.amount !== undefined) this._amount = props.amount; }
-  _getSource() { return this._canvas; }
-  get canvas()  { return this._canvas; }
-  _destroy() {
-    this._canvas.remove(); this._off.remove();
-    this._ctx = null; this._offCtx = null;
-  }
 }
 
 // ── StrobeStage ───────────────────────────────────────────────────────────────
@@ -781,204 +707,76 @@ export class Pipeline {
   }
 
   // ── Stage chain methods (each returns `this`) ─────────────────────────────
+  // All route through _pushStage to eliminate 4-line boilerplate repetition.
 
-  ascii(opts = {}, id) {
-    const stage = new AsciiStage(this._last(), opts);
-    stage._id = id ?? `${this._id}-ascii-${this._stages.length}`;
+  _pushStage(stage, type, id) {
+    stage._id        = id ?? `${this._id}-${type}-${this._stages.length}`;
+    stage._stageName = type;
     _stageRegistry.set(stage._id, stage);
     this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'ascii' });
+    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: type });
     return this;
   }
 
-  pixelate(opts = {}, id) {
-    const stage = new PixelateStage(this._last(), opts);
-    stage._id = id ?? `${this._id}-pixelate-${this._stages.length}`;
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'pixelate' });
-    return this;
-  }
+  ascii(opts = {}, id)          { return this._pushStage(new AsciiStage(this._last(), opts), 'ascii', id); }
+  pixelate(opts = {}, id)       { return this._pushStage(new PixelateStage(this._last(), opts), 'pixelate', id); }
+  fx(filter, id)                { return this._pushStage(new FxStage(this._last(), filter), 'fx', id); }
+  glshader(body, opts = {}, id) { return this._pushStage(new GLShaderStage(this._last(), body, opts), 'glshader', id); }
+  shader(body, opts = {}, id)   { return this._pushStage(new ShaderStage(this._last(), body, opts), 'shader', id); }
 
-  fx(filter, id) {
-    const stage = new FxStage(this._last(), filter);
-    stage._id = id ?? `${this._id}-fx-${this._stages.length}`;
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'fx' });
-    return this;
-  }
-
-  glshader(body, opts = {}, id) {
-    const stage = new GLShaderStage(this._last(), body, opts);
-    stage._id = id ?? `${this._id}-glshader-${this._stages.length}`;
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'glshader' });
-    return this;
-  }
-
-  shader(body, opts = {}, id) {
-    const stage = new ShaderStage(this._last(), body, opts);
-    stage._id = id ?? `${this._id}-shader-${this._stages.length}`;
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'shader' });
-    return this;
-  }
-
-  /**
-   * Custom stage — escape hatch for arbitrary canvas transforms.
-   *
-   * @param {function} factory  Called once at start with the upstream drawable
-   *   (HTMLCanvasElement or HTMLVideoElement). Must return:
-   *   { canvas: HTMLCanvasElement, read() }
-   *   where read() is called every raf tick to update the canvas.
-   *
-   * @example
-   * pipe(cam)
-   *   .use(src => {
-   *     const canvas = document.createElement('canvas');
-   *     canvas.width = 800; canvas.height = 600;
-   *     const ctx = canvas.getContext('2d');
-   *     return {
-   *       canvas,
-   *       read() {
-   *         ctx.filter = 'invert(1)';
-   *         ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
-   *         ctx.filter = 'none';
-   *       }
-   *     };
-   *   })
-   *   .show('Custom', { w: 700, h: 500 });
-   */
-  use(factory, id) {
-    const stage = new CustomStage(this._last(), factory);
-    stage._id = id ?? `${this._id}-custom-${this._stages.length}`;
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'custom' });
-    return this;
-  }
-
+  /** Custom stage — escape hatch. factory(upstream) must return { canvas, read() }. */
+  use(factory, id)                  { return this._pushStage(new CustomStage(this._last(), factory), 'custom', id); }
   /** Overlay SRT subtitles on the upstream source (video or canvas with .currentTime). */
-  subtitle(srtText, opts = {}, id) {
-    const stage = new SubtitleStage(this._last(), srtText, opts);
-    stage._id = id ?? `${this._id}-subtitle-${this._stages.length}`;
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'subtitle' });
-    return this;
-  }
-
-  // ── New visual-effect stage chain methods ────────────────────────────────
-
+  subtitle(srtText, opts = {}, id)  { return this._pushStage(new SubtitleStage(this._last(), srtText, opts), 'subtitle', id); }
   /** Tint the frame by compositing a solid color with 'multiply' blending. */
-  tint(color = '#ffffff', id) {
-    const stage = new TintStage(this._last(), color);
-    stage._id = id ?? `${this._id}-tint-${this._stages.length}`;
-    stage._stageName = 'tint';
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'tint' });
-    return this;
-  }
-
+  tint(color = '#ffffff', id)       { return this._pushStage(new TintStage(this._last(), color), 'tint', id); }
   /** Invert all pixel values (photographic negative). */
-  negative(id) {
-    const stage = new NegativeStage(this._last());
-    stage._id = id ?? `${this._id}-negative-${this._stages.length}`;
-    stage._stageName = 'negative';
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'negative' });
-    return this;
-  }
-
+  negative(id)                      { return this._pushStage(new NegativeStage(this._last()), 'negative', id); }
   /** Solarize: invert pixels whose luminance exceeds threshold (0–1). */
-  solarize(threshold = 0.5, id) {
-    const stage = new SolarizeStage(this._last(), threshold);
-    stage._id = id ?? `${this._id}-solarize-${this._stages.length}`;
-    stage._stageName = 'solarize';
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'solarize' });
-    return this;
-  }
-
+  solarize(threshold = 0.5, id)     { return this._pushStage(new SolarizeStage(this._last(), threshold), 'solarize', id); }
   /** Posterize: reduce each channel to n discrete levels. */
-  posterize(levels = 4, id) {
-    const stage = new PosterizeStage(this._last(), levels);
-    stage._id = id ?? `${this._id}-posterize-${this._stages.length}`;
-    stage._stageName = 'posterize';
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'posterize' });
-    return this;
-  }
-
+  posterize(levels = 4, id)         { return this._pushStage(new PosterizeStage(this._last(), levels), 'posterize', id); }
   /** Duotone: map luminance between two colors (darkColor → lightColor). */
   duotone(darkColor = '#000000', lightColor = '#ffffff', id) {
-    const stage = new DuotoneStage(this._last(), darkColor, lightColor);
-    stage._id = id ?? `${this._id}-duotone-${this._stages.length}`;
-    stage._stageName = 'duotone';
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'duotone' });
-    return this;
+    return this._pushStage(new DuotoneStage(this._last(), darkColor, lightColor), 'duotone', id);
   }
-
   /** Add film grain (luminance noise). amount: 0–1. */
-  grain(amount = 0.15, id) {
-    const stage = new GrainStage(this._last(), amount);
-    stage._id = id ?? `${this._id}-grain-${this._stages.length}`;
-    stage._stageName = 'grain';
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'grain' });
-    return this;
-  }
-
+  grain(amount = 0.15, id)          { return this._pushStage(new GrainStage(this._last(), amount), 'grain', id); }
   /** Strobe: alternate between source frame and black at fps rate. */
-  strobe(fps = 4, id) {
-    const stage = new StrobeStage(this._last(), fps);
-    stage._id = id ?? `${this._id}-strobe-${this._stages.length}`;
-    stage._stageName = 'strobe';
-    _stageRegistry.set(stage._id, stage);
-    this._stages.push(stage);
-    notify('pipe:stage-added', { id: this._id, stageId: stage._id, stage: 'strobe' });
-    return this;
-  }
-
+  strobe(fps = 4, id)               { return this._pushStage(new StrobeStage(this._last(), fps), 'strobe', id); }
   /** CSS blur filter. r: radius in px. */
-  blur(r = 4, id) { return this.fx(`blur(${r}px)`, id); }
-
+  blur(r = 4, id)                   { return this.fx(`blur(${r}px)`, id); }
   /** CSS hue-rotate filter. deg: degrees. */
-  hue(deg = 0, id) { return this.fx(`hue-rotate(${deg}deg)`, id); }
+  hue(deg = 0, id)                  { return this.fx(`hue-rotate(${deg}deg)`, id); }
 
   // ── Live stage mutation (used by route() for temporal control) ────────────
+
+  // Named stage constructors — single source of truth for _createNamedStage and tests.
+  static get STAGE_CTORS() {
+    return {
+      tint:      (up, ...a) => new TintStage(up, ...a),
+      negative:  (up)       => new NegativeStage(up),
+      solarize:  (up, ...a) => new SolarizeStage(up, ...a),
+      posterize: (up, ...a) => new PosterizeStage(up, ...a),
+      duotone:   (up, ...a) => new DuotoneStage(up, ...a),
+      grain:     (up, ...a) => new GrainStage(up, ...a),
+      strobe:    (up, ...a) => new StrobeStage(up, ...a),
+      blur:      (up, r = 4)  => new FxStage(up, `blur(${r}px)`),
+      hue:       (up, d = 0)  => new FxStage(up, `hue-rotate(${d}deg)`),
+      ascii:     (up, o = {}) => new AsciiStage(up, o),
+      pixelate:  (up, o = {}) => new PixelateStage(up, o),
+      fx:        (up, f)      => new FxStage(up, f),
+    };
+  }
 
   /**
    * Factory: create a stage by type name and args, assign _stageName for mutation.
    * Internal — used by route() for timeline and toggle/remove/clear.
    */
   _createNamedStage(type, args) {
-    const upstream = this._last();
-    switch (type) {
-      case 'tint':      return new TintStage(upstream, ...args);
-      case 'negative':  return new NegativeStage(upstream);
-      case 'solarize':  return new SolarizeStage(upstream, ...args);
-      case 'posterize': return new PosterizeStage(upstream, ...args);
-      case 'duotone':   return new DuotoneStage(upstream, ...args);
-      case 'grain':     return new GrainStage(upstream, ...args);
-      case 'strobe':    return new StrobeStage(upstream, ...args);
-      case 'blur':      return new FxStage(upstream, `blur(${args[0] ?? 4}px)`);
-      case 'hue':       return new FxStage(upstream, `hue-rotate(${args[0] ?? 0}deg)`);
-      case 'ascii':     return new AsciiStage(upstream, args[0] ?? {});
-      case 'pixelate':  return new PixelateStage(upstream, args[0] ?? {});
-      case 'fx':        return new FxStage(upstream, args[0]);
-      default:          throw new Error(`pipe: unknown stage type '${type}'`);
-    }
+    const ctor = Pipeline.STAGE_CTORS[type];
+    if (!ctor) throw new Error(`pipe: unknown stage type '${type}'`);
+    return ctor(this._last(), ...args);
   }
 
   /**

@@ -368,6 +368,13 @@ route(Source.camera)
 const r = route(Source.camera).show()
 r.on('beat:bar', r => r.toggle('negative'))
 
+// Karaoke word rain — camera stream + speech event side-effect in one expression
+route(Source.camera)
+  .tap('audio:word:final', ({ word }, winId) =>
+    wm.addText(winId, word, Math.random() * 700, Math.random() * 450, { decay: 4000 })
+  )
+  .show('Karaoke', { w: 800, h: 450 })
+
 // Fan-in: average mic + camera motion
 route(Source.mic).amplitude
   .mix(route(Source.camera).motion())
@@ -448,6 +455,21 @@ route(src1).amplitude
 r.on('beat:bar', (route, payload) => route.toggle('negative'))
 // auto-cleaned when route is destroyed on reset
 ```
+
+### Tap — event side-effects on frame routes
+
+`.tap(event, fn)` — frame routes only (throws on discrete/continuous). Binds a bus event listener whose `fn` receives `(payload, winId)` where `winId` is the window spawned by `.show()`. Lifecycle-bound: subscriptions die when the route is destroyed (window close, reset, `.stop()`). Chainable; multiple `.tap()` calls accumulate.
+
+```js
+route(Source.camera)
+  .tap('audio:word:interim', ({ word }, winId) =>
+    wm.addText(winId, word, x, y, { decay: 2000 })
+  )
+  .tap('beat:bar', (_, winId) => wm.flash(winId))
+  .show('Live', { w: 800, h: 450 })
+```
+
+`wm.addText(winId, ...)` auto-grafts a TextLayer onto any route/pipe-spawned window — no special window type needed.
 
 ---
 
@@ -714,6 +736,11 @@ vision.drawPose(ctx?,  { color, lineWidth, pointSize, minVisibility, mirror } = 
 
 // Config — call before first vision.pose()/drawPose(); first-run-wins (page refresh to change)
 vision.configure({ pose: { model: 'lite'|'full'|'heavy', numPoses: 1 } })
+
+// Custom source — use any HTMLVideoElement or HTMLCanvasElement instead of the webcam
+vision.source(videoEl)   // e.g. from video.open() or a <video> element
+vision.source(canvasEl)  // e.g. from getCanvas() or a pipe output canvas
+vision.source(null)      // revert to webcam
 ```
 
 `cx`/`cy`: canvas-centered turtle coords. cx ∈ [-800,800], cy ∈ [-450,450] (positive=up).  
@@ -850,6 +877,16 @@ wm.spawn(title, opts)   // → id
 //   Toolbar: gauge icon opens dropdown to spawn any sensor type
 wm.spawn('Motion', { type: 'sensor', source: 'motion', w: 480, h: 200 })
 wm.spawn('Gamepad', { type: 'sensor', source: 'gamepad', w: 380, h: 200 })
+
+wm.addText(id, text, x, y, opts?)  // → handle | null
+// opts: fontSize(24), fontFamily, color('#fff'), bold, italic, align, rotation(0),
+//       kerning(0), curve(null|{type:'arc',radius}), opacity(1)
+//       decay: ms — fade opacity 1→0 then auto-remove
+//       animate: { duration(ms), easing?, onDone?, fontSize:[from,to], rotation:[from,to],
+//                  kerning:[from,to], opacity:[from,to] }
+// handle: { id, setText(s), setStyle(opts), moveTo(x,y), remove(), cancelAnimate(), on(ev,fn) }
+// Auto-grafts TextLayer onto any window type (pipe/route-spawned windows included).
+// Run-scoped — cleared on reset.
 
 wm.pickFile(key, pickerOpts?)   // async → blob URL (cached by key, re-prompts once)
 
@@ -988,7 +1025,9 @@ emit('haptics:vibrate', { pattern: 200 }) // commandable: actuates navigator.vib
 | Namespace | Sample events |
 |---|---|
 | `beat:*` | `tick` `bar` `phrase` |
-| `audio:*` | `start` `stop` `bpm-change` `level` `note-play` `speech` `word` `say` |
+| `audio:*` | `start` `stop` `bpm-change` `level` `note-play` `speech` `say` |
+| `audio:word:interim` | `{word, utteranceId, wordIndex, final:false}` — fires per-word while speaking |
+| `audio:word:final` | `{word, utteranceId, wordIndex, final:true}` — fires per-word on utterance commit |
 | `wm:*` | `spawn` `close` `focus` `move` `resize` `maximize` `restore` `show` `hide` |
 | `session:*` | `start` `stop` `reset` `error` |
 | `editor:*` | `change` `save` |

@@ -2,14 +2,13 @@
 // Use when: porting ShaderToy code, running on browsers without WebGPU (Firefox/older Safari),
 // or when an LLM generates GLSL because it has a much larger GLSL training corpus.
 
-import { resolveGLSL, defineGLSL, library } from './library.js';
-import { resolveDrawable } from './drawable-source.js';
-import { liveOutput } from '../runtime/keep-alive.js';
+import { resolveGLSL, library } from './library.js';
 import { mountLayerCanvas } from './layer.js';
 import { onReset } from '../runtime/reset-registry.js';
 import { notify } from '../events/index.js';
 import { registerShaderInstance } from './shader.js';
 import { acquireMicRunScoped } from './media-lease.js';
+import { ShaderLayerBase } from './shader-layer-base.js';
 
 const _glShaders = [];
 
@@ -94,61 +93,28 @@ void main() {
 }`;
 }
 
-// ── Audio FFT helper (mirrors shader.js _readShaderFft) ──────────────────────
-
-function _readFft(src, bins = 32) {
-  const node = src === 'mic' ? window.__ar_mic_analyser : src;
-  if (!node) return new Float32Array(bins);
-  const out = new Float32Array(bins);
-  if (typeof node.getValue === 'function') {
-    const raw = node.getValue();
-    const step = raw.length / bins;
-    for (let i = 0; i < bins; i++) {
-      const db = raw[Math.floor(i * step)];
-      out[i] = isFinite(db) ? Math.max(0, (db + 80) / 80) : 0;
-    }
-  } else if (node.frequencyBinCount) {
-    const data = new Uint8Array(node.frequencyBinCount);
-    node.getByteFrequencyData(data);
-    const step = data.length / bins;
-    for (let i = 0; i < bins; i++) out[i] = data[Math.floor(i * step)] / 255;
-  }
-  return out;
-}
-
 // ── GLShader class ───────────────────────────────────────────────────────────
 
-export class GLShader {
+export class GLShader extends ShaderLayerBase {
   constructor(fragBody, { z = 30, opacity = 1.0, video = null, container = null } = {}) {
-    this._id       = `glsl-${++_glShaderIdCounter}`;
-    this._fragSrc  = resolveGLSL(fragBody);
-    this._z        = z;
-    this._opacity  = opacity;
-    this._videoSrc = video;
-    this._container = container;
+    super();
+    this._initBase({ z, opacity, container, videoSrc: video });
+    this._id      = `glsl-${++_glShaderIdCounter}`;
+    this._fragSrc = resolveGLSL(fragBody);
 
-    this._canvas  = null;
+    // WebGL-specific state
     this._gl      = null;
     this._program = null;
     this._rafId   = null;
     this._startTime = null;
-    this._custom  = new Float32Array(4);
     this._videoTex = null;
-
-    this._boundSignal   = null;
-    this._boundAnalyser = null;
 
     _glShaders.push(this);
     registerShaderInstance(this._id, this); // register in shared shader registry for event bus commands
   }
 
   // ── Video source resolution ──────────────────────────────────────────────
-
-  _resolveVideoSrc() {
-    // Shared object-form resolver (ADR 006); `?? this._videoSrc` keeps the old
-    // permissive passthrough for exotic GPU-uploadable sources (ImageBitmap…).
-    return resolveDrawable(this._videoSrc) ?? this._videoSrc ?? null;
-  }
+  // _resolveVideoSrc() — inherited from ShaderLayerBase
 
   // ── Init ─────────────────────────────────────────────────────────────────
 
@@ -257,22 +223,7 @@ export class GLShader {
   // ── Uniforms ─────────────────────────────────────────────────────────────
 
   _writeUniforms(time) {
-    if (this._boundSignal) {
-      const s = this._boundSignal;
-      this._custom[0] = s.value ?? 0;
-      this._custom[1] = s.bass  ?? 0;
-      this._custom[2] = s.mid   ?? 0;
-      this._custom[3] = s.high  ?? 0;
-    } else if (this._boundAnalyser) {
-      const bins = 32;
-      const fft  = _readFft(this._boundAnalyser, bins);
-      const avg  = (s, e) => { let sum = 0; for (let i = s; i < e; i++) sum += fft[i]; return sum / (e - s) || 0; };
-      const e    = Math.floor(bins * 0.1), m = Math.floor(bins * 0.5);
-      this._custom[0] = avg(0, bins);
-      this._custom[1] = avg(0, e);
-      this._custom[2] = avg(e, m);
-      this._custom[3] = avg(m, bins);
-    }
+    this._packAudioCustom(); // auto-fill _custom[0..3] from bound signal/analyser (base)
 
     const gl = this._gl;
     const c  = this._canvas;
@@ -305,11 +256,11 @@ export class GLShader {
   // ── Public API (mirrors Shader) ──────────────────────────────────────────
 
   start() {
-    this._live = liveOutput(this);
+    this._registerLive();
     if (!this._gl) {
       try { this._init(); } catch (e) {
         console.error('GLShader error:', e.message);
-        this._live?.release();
+        this._releaseLive();
         return this;
       }
     }
@@ -332,47 +283,17 @@ export class GLShader {
     return this;
   }
 
-  video(src) { this._videoSrc = src; return this; }
+  // video(), set(), setUniform(), opacity(), z(), get canvas() — inherited from ShaderLayerBase
 
-  set(indexOrArray, value) {
-    if (Array.isArray(indexOrArray)) {
-      for (let i = 0; i < 4; i++) this._custom[i] = indexOrArray[i] ?? 0;
-    } else {
-      this._custom[indexOrArray] = value;
-    }
-    notify('shader:uniform', { id: this._id, key: indexOrArray, value });
-    return this;
-  }
-
+  // Override bind() to also acquire a mic media lease when 'mic' is passed.
   bind(source) {
-    if (source && typeof source.bass !== 'undefined') {
-      this._boundSignal   = source;
-      this._boundAnalyser = null;
-    } else {
-      if (source === 'mic') acquireMicRunScoped();
-      this._boundSignal   = null;
-      this._boundAnalyser = source;
-    }
-    return this;
+    if (source === 'mic') acquireMicRunScoped();
+    return super.bind(source);
   }
-
-  opacity(n) {
-    this._opacity = n;
-    if (this._canvas) this._canvas.style.opacity = String(n);
-    return this;
-  }
-
-  z(n) {
-    this._z = n;
-    if (this._canvas) this._canvas.style.zIndex = String(n);
-    return this;
-  }
-
-  get canvas() { return this._canvas; }
 
   _destroy() {
     this.stop();
-    this._live?.release();
+    this._releaseLive();
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     if (this._gl) {

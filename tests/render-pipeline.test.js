@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { pipe, Pipeline, cleanupPipelines } from '../src/api/render-pipeline.js';
+import { pipe, Pipeline, cleanupPipelines, PixelStageBase } from '../src/api/render-pipeline.js';
 
 // ── Canvas / DOM mocks ────────────────────────────────────────────────────────
 
@@ -588,5 +588,124 @@ describe('pipe.register()', () => {
     expect(p._stages.length).toBe(3);
     expect(p._stages[1]._upstream).toBe(p._stages[0]);
     expect(p._stages[2]._upstream).toBe(p._stages[1]);
+  });
+});
+
+// ── PixelStageBase — shared canvas boilerplate ─────────────────────────────────
+
+describe('PixelStageBase subclass', () => {
+  // Minimal upstream stub satisfying the interface
+  function makeUpstream(w = 4, h = 4) {
+    const { canvas, ctx } = makeCanvas(w, h);
+    return {
+      _getSource: () => canvas,
+      canvas,
+      ctx,
+    };
+  }
+
+  // Concrete subclass that inverts red channel only (simplest unique transform)
+  class InvertRedStage extends PixelStageBase {
+    _processPixels(data) {
+      for (let i = 0; i < data.length; i += 4) data[i] = 255 - data[i];
+    }
+  }
+
+  it('_start() initializes both canvases', () => {
+    const up = makeUpstream(8, 6);
+    const stage = new InvertRedStage(up);
+    stage._start();
+    expect(stage._canvas.width).toBe(8);
+    expect(stage._canvas.height).toBe(6);
+    expect(stage._ctx).toBeDefined();
+    expect(stage._offCtx).toBeDefined();
+  });
+
+  it('read() calls drawImage → getImageData → _processPixels → putImageData', () => {
+    const up = makeUpstream(4, 4);
+    const stage = new InvertRedStage(up);
+    stage._start();
+
+    const fakeData = new Uint8ClampedArray(4 * 4 * 4).fill(128);
+    const putData = vi.fn();
+    stage._offCtx.getImageData = vi.fn(() => ({ data: fakeData }));
+    stage._ctx.putImageData = putData;
+
+    stage.read();
+
+    expect(stage._offCtx.drawImage).toHaveBeenCalled();
+    expect(putData).toHaveBeenCalled();
+    // red channels inverted: 128 → 127
+    expect(fakeData[0]).toBe(127);
+    expect(fakeData[1]).toBe(128); // green unchanged
+  });
+
+  it('read() is no-op before _start()', () => {
+    const up = makeUpstream();
+    const stage = new InvertRedStage(up);
+    // Should not throw even without _ctx
+    expect(() => stage.read()).not.toThrow();
+  });
+
+  it('_destroy() calls remove() and nulls ctx refs', () => {
+    const up = makeUpstream();
+    const stage = new InvertRedStage(up);
+    stage._start();
+    stage._destroy();
+    expect(stage._canvas.remove).toHaveBeenCalled();
+    expect(stage._ctx).toBeNull();
+    expect(stage._offCtx).toBeNull();
+  });
+
+  it('_getSource() returns _canvas', () => {
+    const up = makeUpstream();
+    const stage = new InvertRedStage(up);
+    expect(stage._getSource()).toBe(stage._canvas);
+  });
+});
+
+// ── Pipeline.STAGE_CTORS — single source of truth ─────────────────────────────
+
+describe('Pipeline.STAGE_CTORS', () => {
+  const expectedTypes = [
+    'tint','negative','solarize','posterize','duotone',
+    'grain','strobe','blur','hue','ascii','pixelate','fx',
+  ];
+
+  it('contains all expected stage types', () => {
+    const ctors = Pipeline.STAGE_CTORS;
+    for (const type of expectedTypes) {
+      expect(ctors[type], `missing stage type '${type}'`).toBeDefined();
+    }
+  });
+
+  it('each entry is a function returning an object with read/_getSource', () => {
+    const ctors = Pipeline.STAGE_CTORS;
+    const fakeUpstream = { _getSource: () => makeCanvas().canvas };
+    for (const [type, ctor] of Object.entries(ctors)) {
+      let stage;
+      // provide sensible defaults for each type
+      if (type === 'tint')      stage = ctor(fakeUpstream, '#ff0000');
+      else if (type === 'blur') stage = ctor(fakeUpstream, 4);
+      else if (type === 'hue')  stage = ctor(fakeUpstream, 90);
+      else if (type === 'fx')   stage = ctor(fakeUpstream, 'invert(1)');
+      else                      stage = ctor(fakeUpstream);
+      expect(typeof stage.read,       `${type}.read`).toBe('function');
+      expect(typeof stage._getSource, `${type}._getSource`).toBe('function');
+    }
+  });
+
+  it('_createNamedStage delegates to STAGE_CTORS', () => {
+    const { canvas: src } = makeCanvas();
+    const p = pipe(src);
+    const stage = p._createNamedStage('grain', [0.3]);
+    expect(stage).toBeDefined();
+    expect(typeof stage.read).toBe('function');
+  });
+
+  it('_createNamedStage throws for unknown type', () => {
+    const { canvas: src } = makeCanvas();
+    const p = pipe(src);
+    expect(() => p._createNamedStage('unicorn', [])).toThrow(/unknown stage type/);
   });
 });

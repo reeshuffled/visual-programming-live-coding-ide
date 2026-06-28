@@ -78,6 +78,7 @@ let _ready = false;
 let _running = false;
 let _rafId = null;
 let _cameraLeased = false; // guard: acquire once per run start
+let _videoSource = null; // custom source override (video/canvas el)
 let _lastDetectionTime = 0;
 const DETECTION_INTERVAL_MS = 100;
 
@@ -147,15 +148,16 @@ function _loop() {
   if (!_running) return;
   _rafId = requestAnimationFrame(_loop);
 
-  const video = window.__ar_video;
-  if (!video || video.readyState < video.HAVE_CURRENT_DATA) return;
+  const video = _videoSource ?? window.__ar_video;
+  if (!video) return;
+  if (video instanceof HTMLVideoElement && video.readyState < video.HAVE_CURRENT_DATA) return;
 
   const now = performance.now();
   if (now - _lastDetectionTime < DETECTION_INTERVAL_MS) return;
   _lastDetectionTime = now;
 
-  const vw = video.videoWidth || 600;
-  const vh = video.videoHeight || 600;
+  const vw = video instanceof HTMLVideoElement ? (video.videoWidth || 600) : (video.width || 600);
+  const vh = video instanceof HTMLVideoElement ? (video.videoHeight || 600) : (video.height || 600);
   const canvasEl = document.getElementById("turtle");
   const cw = canvasEl?.width ?? 600;
   const ch = canvasEl?.height ?? 600;
@@ -259,7 +261,7 @@ function _loop() {
 
 function _ensureStarted() {
   if (_running) return;
-  if (!_cameraLeased) { acquireCameraRunScoped(); _cameraLeased = true; }
+  if (!_cameraLeased && !_videoSource) { acquireCameraRunScoped(); _cameraLeased = true; }
   _running = true;
   if (_ready) {
     _loop();
@@ -282,6 +284,7 @@ export function preloadVision() {
 export function stopVision() {
   _running = false;
   _cameraLeased = false; // allow re-acquire on next run
+  _videoSource = null;
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
   _cache.objects = [];
   _cache.hands = [];
@@ -297,6 +300,14 @@ export const vision = {
     if (opts.pose && !_initPosePromise) {
       Object.assign(_poseConfig, opts.pose);
     }
+    return this;
+  },
+
+  // Use a custom HTMLVideoElement or HTMLCanvasElement instead of the webcam.
+  // Pass null to revert to webcam. Must be called before other vision methods.
+  source(el) {
+    _videoSource = el ?? null;
+    _ensureStarted();
     return this;
   },
 

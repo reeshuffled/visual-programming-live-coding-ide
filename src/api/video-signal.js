@@ -41,7 +41,7 @@ export const VideoSignalAPI = {
     const off    = document.createElement('canvas');
     off.width    = SAMPLE_SIZE;
     off.height   = SAMPLE_SIZE;
-    const offCtx = off.getContext('2d');
+    const offCtx = off.getContext('2d', { willReadFrequently: true });
 
     let _r = 0, _g = 0, _b = 0, _brightness = 0, _hue = 0, _motion = 0;
     let _prevData = null;

@@ -107,8 +107,10 @@ Option B: bare **string = event name** always. No string overloading.
 - `fn(value)` → called directly
 - String `'event:name'` → `notify(event, value)`
 - Tone.Signal / AudioParam duck-typed → `.value = v` (direct set, low-latency) or `.rampTo(v, ms/1000)` with `{ramp:ms}` option
-- Shader instance + dotted path `'uCustom.x'` → read-modify-write swizzle
-- Shader instance + simple name `'uCustom'` → `setUniform(name, v)`
+- Shader instance + dotted path `'uCustom.x'` → read-modify-write swizzle via `sink._uniforms` + `sink.setUniform`
+- Shader instance + simple name `'uCustom'` → `sink.setUniform(name, v)`
+
+`setUniform` and `_uniforms` live on `ShaderLayerBase` (both `Shader` and `GLShader` extend it — ADR 030). Route targets the interface; never calls internal `_custom` directly.
 
 ### Bridges
 

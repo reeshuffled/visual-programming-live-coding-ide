@@ -16,7 +16,8 @@ import { Media, cleanupMedia } from "../api/media.js";
 import { VideoSignalAPI, cleanupVideoSignal } from "../api/video-signal.js";
 import "../api/device-sources.js"; // lazy device event sources (no exported API)
 import "../api/serial.js";         // WebSerial + GPIO on the bus (ADR 020, no window API)
-import { DesktopAPI, initDesktop, cleanupDesktop, addFolderIcon } from "../api/desktop-files.js";
+import { DesktopAPI, initDesktop, cleanupDesktop, addFolderIcon, getIconSerializedData, removeIconById } from "../api/desktop-files.js";
+import { initProjectManager } from "../api/project-manager.js";
 import { initDOMCaptures, captureWindow as _captureWindow, cleanupCaptures } from "../editor/editor-capture.js";
 import { pipe, Source, cleanupPipelines } from "../api/render-pipeline.js";
 import { route } from "../api/route.js";
@@ -217,6 +218,9 @@ window.onload = () => {
   });
   _registerBuiltin('wm', _wm);
   initDesktop(window.wm);
+  // Wire project-manager bridge globals used by desktop-files.js context menus
+  window.__ar_getIconSerializedData = getIconSerializedData;
+  window.__ar_removeIconById        = removeIconById;
   installWidgetHistoryKeys();
 
   // Widget restore factories — called by wm.restoreState for code-generated windows
@@ -1068,6 +1072,12 @@ window.onload = () => {
     updateManifest: (ids) => EditorInstance.saveManifest(ids),
   };
 
+  initProjectManager({
+    appAPI,
+    getWm:        () => window.wm,
+    getInstances: () => window.__ar_instances,
+  });
+
   document.getElementById('saveProjectBtn')?.addEventListener('click', () =>
     saveProject(window.wm, window.__ar_instances));
 
@@ -1083,6 +1093,79 @@ window.onload = () => {
 
   document.getElementById('loadProjectBtn')?.addEventListener('click', () =>
     loadProject(window.wm, window.__ar_instances, appAPI));
+
+  // ── Projects toolbar dropdown ──────────────────────────────────────────────
+  (() => {
+    const btn  = document.getElementById('projectsBtn');
+    const drop = document.getElementById('projectsDropdown');
+    if (!btn || !drop) return;
+
+    const render = () => {
+      drop.innerHTML = '';
+      const pm       = window.__ar_projectManager;
+      if (!pm) return;
+      const activeId   = pm.getActiveProjectId();
+      const activeName = pm.getActiveProjectName();
+      const projects   = window.__ar_projectCache ?? [];
+
+      const addItem = (label, fn, extra = '') => {
+        const li = document.createElement('li');
+        li.textContent = label;
+        if (extra) li.style.cssText = extra;
+        li.addEventListener('click', e => { e.stopPropagation(); drop.classList.remove('open'); fn(); });
+        drop.appendChild(li);
+      };
+      const addSep = () => {
+        const li = document.createElement('li');
+        li.style.cssText = 'pointer-events:none;padding:2px 0;border-top:1px solid #dde;margin:2px 0;';
+        drop.appendChild(li);
+      };
+
+      // Current project header
+      const hdr = document.createElement('li');
+      hdr.style.cssText = 'font-size:10px;color:#888;letter-spacing:0.5px;text-transform:uppercase;padding:6px 14px 2px;pointer-events:none;';
+      hdr.textContent = 'Projects';
+      drop.appendChild(hdr);
+
+      for (const p of projects) {
+        const isActive = p.id === activeId;
+        addItem((isActive ? '▶ ' : '  ') + p.name, () => {
+          if (!isActive) pm.switchProject(p.id);
+        }, isActive ? 'font-weight:600;color:#3a5fe0;' : '');
+      }
+
+      addSep();
+      addItem('+ New project…', async () => {
+        const name = prompt('Project name:');
+        if (!name?.trim()) return;
+        const id = await pm.createProject(name.trim());
+        pm.switchProject(id);
+      });
+      addItem('Rename "' + activeName + '"…', async () => {
+        const name = prompt('Rename project:', activeName);
+        if (!name?.trim() || name.trim() === activeName) return;
+        pm.renameProject(activeId, name.trim());
+      });
+      if (projects.length > 1) {
+        addItem('Delete "' + activeName + '"…', async () => {
+          if (!confirm(`Delete project "${activeName}"? Cannot be undone.`)) return;
+          pm.deleteProject(activeId);
+        }, 'color:#c0392b;');
+      }
+    };
+
+    window.__ar_projectDropdownRefresh = render;
+
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      if (!drop.classList.contains('open')) render();
+      drop.classList.toggle('open');
+    });
+
+    document.addEventListener('click', e => {
+      if (!btn.contains(e.target)) drop.classList.remove('open');
+    });
+  })();
 
   // ── Fullscreen ───────────────────────────────────────────────────────────
   document.getElementById('undoWinBtn')?.addEventListener('click', () => window.wm.undo());

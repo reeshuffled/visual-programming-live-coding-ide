@@ -22,6 +22,8 @@ import { liveOutput } from '../runtime/keep-alive.js';
 import { pipe } from './render-pipeline.js';
 import { audio } from './audio.js';
 import { VideoSignalAPI } from './video-signal.js';
+import { _isCanvas, _isVideo } from './drawable-source.js';
+import { isVideoSignal, isAudioSignal } from './signal-shape.js';
 
 // ── Native timing (captured before user-code patching) ────────────────────────
 // RAF is native — route keeps its own loop independent of the patched scheduler.
@@ -105,11 +107,11 @@ function resolveSource(src) {
 
   if (src !== null && typeof src === 'object') {
     // video.signal() object — has brightness + motion
-    if ('brightness' in src && 'motion' in src) {
+    if (isVideoSignal(src)) {
       return { kind: 'continuous', read: () => src, label: 'video.signal', _signalObj: src };
     }
     // audio.signal() object — has value + fft
-    if ('value' in src && 'fft' in src) {
+    if (isAudioSignal(src)) {
       return { kind: 'continuous', read: () => src, label: 'audio.signal', _signalObj: src };
     }
     // Tone.Signal / AudioParam — numeric .value
@@ -119,12 +121,8 @@ function resolveSource(src) {
   }
 
   // HTML canvas / video element → frame
-  if (typeof HTMLCanvasElement !== 'undefined' && src instanceof HTMLCanvasElement) {
-    return { kind: 'frame', raw: src, label: 'canvas' };
-  }
-  if (typeof HTMLVideoElement !== 'undefined' && src instanceof HTMLVideoElement) {
-    return { kind: 'frame', raw: src, label: 'video' };
-  }
+  if (_isCanvas(src)) return { kind: 'frame', raw: src, label: 'canvas' };
+  if (_isVideo(src))  return { kind: 'frame', raw: src, label: 'video' };
 
   throw new Error(
     'route(): unsupported source — pass a bus event string, Source.mic, Source.camera, ' +

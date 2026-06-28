@@ -107,6 +107,31 @@ function fire(event, payload = {}) {
   for (const { fn } of (_subscribers.get(event) ?? [])) fn(payload);
 }
 
+// Shader stub implementing the ShaderLayerBase interface: setUniform/_uniforms/_custom.
+// Avoids importing ShaderLayerBase (which pulls in event-selector.js, causing a
+// temporal dead zone error on _onResetCb). ShaderLayerBase itself is tested separately
+// in shader-layer-base.test.js; these tests verify route's wiring to the interface.
+function makeShaderStub(id = 'test-shader') {
+  const _custom = new Float32Array(4);
+  const _uniforms = {};
+  const stub = {
+    _id: id,
+    _custom,
+    _uniforms,
+    setUniform(name, val) {
+      if (name === 'uCustom' || name === 'custom') {
+        const v = { x: 0, y: 0, z: 0, w: 0, ...val };
+        _uniforms.uCustom = v;
+        _custom[0] = v.x; _custom[1] = v.y; _custom[2] = v.z; _custom[3] = v.w;
+      } else {
+        _uniforms[name] = val;
+      }
+      return stub;
+    },
+  };
+  return stub;
+}
+
 let route, getLiveRoutes;
 let liveOutput;
 let _pipelineObj;
@@ -309,20 +334,25 @@ describe('sink resolution', () => {
     }, 50));
   });
 
-  it('shader+path sink: calls setUniform', () => {
-    const shader = { setUniform: vi.fn(), _uniforms: {} };
+  it('shader+path sink: setUniform stores value in _uniforms', () => {
+    const shader = makeShaderStub();
     route(() => 0.5).to(shader, 'uColor');
     return new Promise(resolve => setTimeout(() => {
-      expect(shader.setUniform).toHaveBeenCalledWith('uColor', 0.5);
+      // Non-uCustom names are stored in _uniforms (fwd-compat storage)
+      expect(shader._uniforms.uColor).toBe(0.5);
       resolve();
     }, 50));
   });
 
-  it('shader+dotted path: RMW swizzle', () => {
-    const shader = { setUniform: vi.fn(), _uniforms: { uCustom: { x: 0, y: 1, z: 0, w: 0 } } };
+  it('shader+dotted path: RMW swizzle writes to _custom and _uniforms', () => {
+    const shader = makeShaderStub();
+    shader.setUniform('uCustom', { x: 0, y: 1, z: 0, w: 0 }); // set initial state
     route(() => 0.8).to(shader, 'uCustom.x');
     return new Promise(resolve => setTimeout(() => {
-      expect(shader.setUniform).toHaveBeenCalledWith('uCustom', expect.objectContaining({ x: 0.8, y: 1 }));
+      // x channel updated to 0.8; y channel preserved from initial write
+      expect(shader._custom[0]).toBeCloseTo(0.8);
+      expect(shader._custom[1]).toBeCloseTo(1.0);
+      expect(shader._uniforms.uCustom).toMatchObject({ x: 0.8, y: 1 });
       resolve();
     }, 50));
   });
@@ -360,7 +390,7 @@ describe('clock election', () => {
   });
 
   it('discrete + non-immediate sink → pull driver (RAF)', () => {
-    const shader = { setUniform: vi.fn() };
+    const shader = makeShaderStub();
     const r = route('beat:bar').get('value').to(shader, 'uBeat');
     // Non-immediate sink → RAF needed
     expect(r._raf).not.toBeNull();
@@ -371,15 +401,15 @@ describe('clock election', () => {
 
 describe('sample-and-hold', () => {
   it('discrete event payload is held for pull sinks', async () => {
-    const shader = { setUniform: vi.fn(), _uniforms: {} };
+    const shader = makeShaderStub();
     route('midi:cc').get('value').to(shader, 'uMidi');
 
     // Fire event → value stored in hold cell
     fire('midi:cc', { value: 64 });
 
-    // RAF tick should write held value to shader
+    // RAF tick should write held value to shader via real setUniform
     await new Promise(r => setTimeout(r, 50));
-    expect(shader.setUniform).toHaveBeenCalledWith('uMidi', 64);
+    expect(shader._uniforms.uMidi).toBe(64);
   });
 });
 

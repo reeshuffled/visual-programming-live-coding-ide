@@ -1,5 +1,6 @@
 import { onReset } from '../runtime/reset-registry.js';
 import { getLiveRoutes } from './route.js';
+import { forEachLive } from '../runtime/keep-alive.js';
 // signal-graph.js — read-only overlay of signal-bus routing
 // Sources: audio.fft, hold('sensor:*'), hold('window:mouse:move'), video.signal(), camera streams
 // Sinks: ThreeScene, Shader, GLShader, pipe()
@@ -84,11 +85,7 @@ function _esc(str) {
 
 function _detectLiveNodes() {
   const labels = [];
-  const ka = window.__ar_keepAlive;
-  if (!ka) return labels;
-  for (const obj of ka) {
-    if (obj?.constructor?.name) labels.push(obj.constructor.name);
-  }
+  forEachLive(obj => { if (obj?.constructor?.name) labels.push(obj.constructor.name); });
   return [...new Set(labels)];
 }
 

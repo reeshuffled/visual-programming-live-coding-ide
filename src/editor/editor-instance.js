@@ -1101,7 +1101,8 @@ export class EditorInstance {
     this._startIdleWatcher();
   }
 
-  reset() {
+  // soft=true: preserve _keepAlive + _hadOutput so output window stays alive during auto-exec re-run.
+  reset({ soft = false } = {}) {
     if (this.btnState === 'running' || this.btnState === 'paused') emit('session:stop', {});
     _endRun(); // restore any registerAPI() overrides made during this run
     this.cm.dispatch({ effects: setErrorLineEffect.of(null) });
@@ -1117,48 +1118,17 @@ export class EditorInstance {
     this._intervals.clear();
     this._timeouts.clear();
     runResetHandlers();   // every subsystem's cleanup, registered via onReset (ADR 008)
-    this._keepAlive = new Set();
-    this._hadOutput = false;
-    window.__ar_keepAlive = this._keepAlive;
-    if (this.currentScript) { document.body.removeChild(this.currentScript); this.currentScript = null; }
-    this._layerObjects.forEach(layer => layer.reset());
-    this._layerObjects.clear();
-    this._drawTargets.clear();
-    for (const [z, c] of this._layers) {
-      c.getContext('2d').clearRect(0, 0, c.width, c.height);
-      if (z !== 0) c.remove();
+    if (!soft) {
+      this._keepAlive = new Set();
+      this._hadOutput = false;
+      window.__ar_keepAlive = this._keepAlive;
     }
-    this._layers = new Map([[0, this.mainCanvas]]);
-    this._getLayerCanvas = this._makeGetLayerCanvas();
-    this._refreshDraw();
-    if (this.idleWatcher) { this._native.clearInterval(this.idleWatcher); }
-    this.idleWatcher = null;
-    this._setIdle();
-  }
-
-  // Like reset() but preserves output window and keepAlive Set (for soft/auto-exec re-run).
-  _softReset() {
-    if (this.btnState === 'running' || this.btnState === 'paused') emit('session:stop', {});
-    _endRun();
-    this.cm.dispatch({ effects: setErrorLineEffect.of(null) });
-    this._clearTrace();
-    window.__ar_paused    = false;
-    window.__ar_usesAudio = undefined;
-    this._pausedState = null;
-    this._listeners.forEach(({ target, type, handler, options }) =>
-      target?.removeEventListener(type, handler, options));
-    this._listeners = [];
-    for (const id of this._intervals.keys()) this._native.clearInterval(id);
-    for (const id of this._timeouts.keys()) this._native.clearTimeout(id);
-    this._intervals.clear();
-    this._timeouts.clear();
-    runResetHandlers();   // every subsystem's cleanup, registered via onReset (ADR 008)
-    // Preserve _keepAlive and _hadOutput so the output window stays alive
     if (this.currentScript) { document.body.removeChild(this.currentScript); this.currentScript = null; }
     this._layerObjects.forEach(layer => layer.reset());
     this._layerObjects.clear();
     this._drawTargets.clear();
     for (const [z, c] of this._layers) {
+      if (!soft) c.getContext('2d').clearRect(0, 0, c.width, c.height);
       if (z !== 0) c.remove();
     }
     this._layers = new Map([[0, this.mainCanvas]]);
@@ -1206,11 +1176,7 @@ export class EditorInstance {
     // Camera/mic are demand-driven (ADR 023): consumers acquire leases when called,
     // so no pre-run regex checks needed.
 
-    if (soft) {
-      this._softReset();
-    } else {
-      this.reset();
-    }
+    this.reset({ soft });
     _beginRun(); // snapshot API registry so run-scoped registerAPI() calls are reverted on reset
 
     // Smart output detection: analyse user code before executing so we only open

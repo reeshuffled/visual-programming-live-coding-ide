@@ -4,31 +4,12 @@ import { WidgetHistory } from "./widget-history.js";
 import { onReset } from '../runtime/reset-registry.js';
 import { liveOutput } from '../runtime/keep-alive.js';
 import { acquireMicRunScoped } from './media-lease.js';
+import { readAnalyser } from './analyser-read.js';
 
 const _vizs = [];
 
 // Registered by PianoRollViz to receive note events from Instrument.play()
 export const _noteHooks = [];
-
-// ── Local FFT reader (handles Tone.Analyser + Web Audio AnalyserNode) ─────────
-function _localReadFft(analyser, bins) {
-  if (!analyser) return new Float32Array(bins);
-  const out = new Float32Array(bins);
-  if (typeof analyser.getValue === 'function') {
-    const raw = analyser.getValue();
-    const step = raw.length / bins;
-    for (let i = 0; i < bins; i++) {
-      const db = raw[Math.floor(i * step)];
-      out[i] = isFinite(db) ? Math.max(0, (db + 80) / 80) : 0;
-    }
-  } else if (analyser && analyser.frequencyBinCount) {
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteFrequencyData(data);
-    const step = data.length / bins;
-    for (let i = 0; i < bins; i++) out[i] = data[Math.floor(i * step)] / 255;
-  }
-  return out;
-}
 
 export function cleanupViz() {
   for (const v of _vizs) v._destroy();
@@ -261,7 +242,7 @@ export class SpectrogramCanvas {
     this._canvas = document.createElement('canvas');
     this._canvas.width  = width;
     this._canvas.height = height;
-    this._ctx   = this._canvas.getContext('2d');
+    this._ctx   = this._canvas.getContext('2d', { willReadFrequently: true });
     this._rafId = null;
 
     if (z !== null) {
@@ -293,7 +274,7 @@ export class SpectrogramCanvas {
       }
       return out;
     }
-    return _localReadFft(this._analyser, this._bins);
+    return readAnalyser(this._analyser, this._bins);
   }
 
   _colorFor(v) {

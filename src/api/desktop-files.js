@@ -714,6 +714,118 @@ function _ctx(icon, cx, cy) {
     });
   }
 
+  // ── Project move / copy ───────────────────────────────────────────────────
+  const pm = window.__ar_projectManager;
+  if (pm) {
+    const activeId = pm.getActiveProjectId();
+    const projects = (window.__ar_projectCache ?? []).filter(p => p.id !== activeId);
+    const targets = allSelected.length > 1 ? allSelected : [icon.id];
+    const label = allSelected.length > 1 ? `${allSelected.length} selected` : `"${icon.name}"`;
+
+    const doMoveOrCopy = (targetId, copy) => {
+      for (const id of targets) {
+        const ic = _icons.get(id);
+        if (!ic) continue;
+        if (ic.type === 'editor') {
+          pm.moveEditorToProject(ic.editorId, targetId, copy);
+        } else {
+          pm.moveIconToProject(id, targetId, copy);
+        }
+      }
+    };
+
+    const addProjectItems = (verb, copy) => {
+      section(verb + ' to project');
+      if (projects.length === 0) {
+        item('+ New project…', async () => {
+          const name = prompt('Project name:');
+          if (!name?.trim()) return;
+          const newId = await pm.createProject(name.trim());
+          doMoveOrCopy(newId, copy);
+        });
+      } else {
+        for (const p of projects) {
+          item(p.name, () => doMoveOrCopy(p.id, copy));
+        }
+        item('+ New project…', async () => {
+          const name = prompt('Project name:');
+          if (!name?.trim()) return;
+          const newId = await pm.createProject(name.trim());
+          doMoveOrCopy(newId, copy);
+        });
+      }
+    };
+
+    sep();
+    addProjectItems('Move', false);
+    sep();
+    addProjectItems('Copy', true);
+  }
+
+  document.body.appendChild(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(cx, window.innerWidth  - r.width  - 8) + 'px';
+  menu.style.top  = Math.min(cy, window.innerHeight - r.height - 8) + 'px';
+
+  setTimeout(() => {
+    const dismiss = e => {
+      if (!menu.contains(e.target)) { _dismissCtx(); document.removeEventListener('mousedown', dismiss, true); }
+    };
+    document.addEventListener('mousedown', dismiss, true);
+  }, 0);
+}
+
+// ── Desktop background context menu ───────────────────────────────────────────
+
+function _ctxDesktop(cx, cy) {
+  const pm = window.__ar_projectManager;
+  if (!pm) return;
+  _dismissCtx();
+  const menu = document.createElement('div');
+  menu.className = 'dt-ctx';
+  _ctxEl = menu;
+
+  const item = (label, fn) => {
+    const el = document.createElement('div');
+    el.className = 'dt-ctx-item';
+    el.textContent = label;
+    el.addEventListener('mousedown', e => { e.stopPropagation(); _dismissCtx(); fn(); });
+    menu.appendChild(el);
+  };
+  const sep = () => { const el = document.createElement('div'); el.className = 'dt-ctx-sep'; menu.appendChild(el); };
+  const section = t => { const el = document.createElement('div'); el.className = 'dt-ctx-label'; el.textContent = t; menu.appendChild(el); };
+
+  const activeId   = pm.getActiveProjectId();
+  const activeName = pm.getActiveProjectName();
+  const projects   = (window.__ar_projectCache ?? []).filter(p => p.id !== activeId);
+
+  section('Current: ' + activeName);
+  if (projects.length > 0) {
+    sep();
+    section('Switch to');
+    for (const p of projects) {
+      item(p.name, () => pm.switchProject(p.id));
+    }
+  }
+  sep();
+  item('+ New project…', async () => {
+    const name = prompt('Project name:');
+    if (!name?.trim()) return;
+    const id = await pm.createProject(name.trim());
+    pm.switchProject(id);
+  });
+  item('Rename "' + activeName + '"…', async () => {
+    const name = prompt('Rename project:', activeName);
+    if (!name?.trim() || name.trim() === activeName) return;
+    await pm.renameProject(activeId, name.trim());
+  });
+  if ((window.__ar_projectCache?.length ?? 0) > 1) {
+    item('Delete "' + activeName + '"…', async () => {
+      if (!confirm(`Delete project "${activeName}"? This cannot be undone.`)) return;
+      await pm.deleteProject(activeId);
+    });
+  }
+
   document.body.appendChild(menu);
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.min(cx, window.innerWidth  - r.width  - 8) + 'px';
@@ -811,6 +923,12 @@ function _initDrop() {
   d.addEventListener('click', e => {
     if (_suppressClick) { _suppressClick = false; return; }
     if (e.target === d) { _clearSel(); _dismissCtx(); }
+  });
+
+  d.addEventListener('contextmenu', e => {
+    if (e.target !== d) return;
+    e.preventDefault();
+    _ctxDesktop(e.clientX, e.clientY);
   });
 
   // Marquee selection
@@ -1148,3 +1266,30 @@ export function initDesktop(wmApi) {
 
 // Register teardown with the reset registry (ADR 008).
 onReset(cleanupDesktop);
+
+// ── Project-manager bridge (called via window.__ar_* by project-manager.js) ──
+
+export function getIconSerializedData(id) {
+  const icon = _icons.get(id);
+  if (!icon) return null;
+  if (icon.blobKey) {
+    return { type: icon.type, name: icon.name, blobKey: icon.blobKey, x: icon.x, y: icon.y, iconOpts: icon.iconOpts ?? undefined };
+  }
+  if (icon.content) {
+    return { type: icon.type, name: icon.name, content: icon.content, x: icon.x, y: icon.y, iconOpts: icon.iconOpts ?? undefined };
+  }
+  if (icon.url && !icon.url.startsWith('blob:')) {
+    return { type: icon.type, name: icon.name, url: icon.url, x: icon.x, y: icon.y, iconOpts: icon.iconOpts ?? undefined };
+  }
+  return null;
+}
+
+export function removeIconById(id) {
+  const icon = _icons.get(id);
+  if (!icon || icon.type === 'editor') return;
+  if (icon.blobKey) _delCaptureBlob(icon.blobKey);
+  icon.el?.remove();
+  _icons.delete(id);
+  _selIds.delete(id);
+  _saveDesktopState();
+}

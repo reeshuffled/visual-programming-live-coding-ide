@@ -5,6 +5,7 @@ import { Piano } from "./piano.js";
 import { onReset } from '../runtime/reset-registry.js';
 import { notify, registerCommand } from '../events/index.js';
 import { acquireMicRunScoped } from './media-lease.js';
+import { readAnalyser } from './analyser-read.js';
 
 const _nativeSetInterval = window.setInterval.bind(window);
 const _nativeClearInterval = window.clearInterval.bind(window);
@@ -50,30 +51,6 @@ function track(d) {
 }
 
 // ── Audio signal helpers ──────────────────────────────────────────────────────
-
-// Normalize any audio source to a Float32Array[0..1] of length `bins`.
-// src: 'mic' | Web Audio AnalyserNode | Tone.Analyser
-function _readFft(src, bins) {
-  const node = src === 'mic' ? window.__ar_mic_analyser : src;
-  if (!node) return new Float32Array(bins);
-  const out = new Float32Array(bins);
-  if (typeof node.getValue === 'function') {
-    // Tone.Analyser — dB values (-Infinity..0)
-    const raw = node.getValue();
-    const step = raw.length / bins;
-    for (let i = 0; i < bins; i++) {
-      const db = raw[Math.floor(i * step)];
-      out[i] = isFinite(db) ? Math.max(0, (db + 80) / 80) : 0;
-    }
-  } else if (node.frequencyBinCount) {
-    // Web Audio AnalyserNode
-    const data = new Uint8Array(node.frequencyBinCount);
-    node.getByteFrequencyData(data);
-    const step = data.length / bins;
-    for (let i = 0; i < bins; i++) out[i] = data[Math.floor(i * step)] / 255;
-  }
-  return out;
-}
 
 // Wrap a Tone node with an internal Analyser; pass through AnalyserNode/Tone.Analyser/string.
 function _makeAnalyser(source, bins) {
@@ -570,7 +547,7 @@ function _makeSignal(analyser, bins) {
   const getFft = () => {
     const now = performance.now();
     if (now - _cacheTime > 8) {
-      _cached = _readFft(analyser, bins);
+      _cached = readAnalyser(analyser, bins);
       _cacheTime = now;
     }
     return _cached ?? new Float32Array(bins);
@@ -1083,7 +1060,7 @@ class AudioAPI {
     const img = ctx2d.createImageData(bins, 1);
     let rafId;
     const frame = () => {
-      const fft = _readFft(analyser ?? source, bins);
+      const fft = readAnalyser(analyser ?? source, bins);
       for (let i = 0; i < bins; i++) {
         const v = Math.round(Math.min(1, fft[i]) * 255);
         img.data[i * 4]     = v;

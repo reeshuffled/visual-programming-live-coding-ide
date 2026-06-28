@@ -1,11 +1,10 @@
 import { jsToWGSL } from './js-to-wgsl.js';
 import { resolveWGSL, library } from './library.js';
-import { resolveDrawable } from './drawable-source.js';
 import { onReset } from '../runtime/reset-registry.js';
-import { liveOutput } from '../runtime/keep-alive.js';
 import { mountLayerCanvas } from './layer.js';
 import { notify, registerCommand } from '../events/index.js';
 import { acquireCameraRunScoped, acquireMicRunScoped } from './media-lease.js';
+import { ShaderLayerBase } from './shader-layer-base.js';
 
 const _shaders = [];
 const _shaderRegistry = new Map(); // id → Shader instance (for event bus command handlers)
@@ -101,44 +100,20 @@ fn fs(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
   );
 }
 
-// ── Audio→shader helper (no audio.js import — duck types both Tone and Web Audio) ──
-
-function _readShaderFft(src, bins = 32) {
-  const node = src === 'mic' ? window.__ar_mic_analyser : src;
-  if (!node) return new Float32Array(bins);
-  const out = new Float32Array(bins);
-  if (typeof node.getValue === 'function') {
-    const raw = node.getValue();
-    const step = raw.length / bins;
-    for (let i = 0; i < bins; i++) {
-      const db = raw[Math.floor(i * step)];
-      out[i] = isFinite(db) ? Math.max(0, (db + 80) / 80) : 0;
-    }
-  } else if (node.frequencyBinCount) {
-    const data = new Uint8Array(node.frequencyBinCount);
-    node.getByteFrequencyData(data);
-    const step = data.length / bins;
-    for (let i = 0; i < bins; i++) out[i] = data[Math.floor(i * step)] / 255;
-  }
-  return out;
-}
-
 // ── Shader class ────────────────────────────────────────────────────────────
 
 let _shaderIdCounter = 0;
 
-export class Shader {
+export class Shader extends ShaderLayerBase {
   constructor(fragmentBodyOrWGSL, { z = 30, opacity = 1.0, video = null, container = null, bind = null } = {}) {
+    super();
+    this._initBase({ z, opacity, container, videoSrc: video });
     this._id = `shader-${++_shaderIdCounter}`;
     // Accept a JS function — transpiled to WGSL at start() time (after video src is known)
     this._fn      = typeof fragmentBodyOrWGSL === 'function' ? fragmentBodyOrWGSL : null;
     this._fragSrc = this._fn ? null : resolveWGSL(fragmentBodyOrWGSL);
     this._bind    = bind;   // param-alias map forwarded to jsToWGSL (internal; e.g. viz {v:'col.r'})
     this._helpers = [];   // WGSL helper fn strings from jsToWGSL
-    this._z = z;
-    this._opacity = opacity;
-    this._container = container; // explicit mount target — bypasses fsContainer/canvasWrapper
-    this._canvas = null;
     this._ctx = null;
     this._device = null;
     this._pipeline = null;
@@ -146,12 +121,8 @@ export class Shader {
     this._bindGroup = null;
     this._rafId = null;
     this._startTime = null;
-    this._custom = new Float32Array(4);
-    this._boundSignal   = null; // signal obj from audio.signal()
-    this._boundAnalyser = null; // raw Tone.Analyser / AnalyserNode / 'mic'
 
-    // Video / texture source
-    this._videoSrc = video;
+    // Video / texture source (WebGPU-specific)
     this._videoTex = null;
     this._videoSampler = null;
     this._videoTexSize = null;
@@ -161,12 +132,7 @@ export class Shader {
   }
 
   // ── Video source resolution ──────────────────────────────────────────────
-
-  _resolveVideoSrc() {
-    // Shared object-form resolver (ADR 006); `?? this._videoSrc` keeps the old
-    // permissive passthrough for exotic GPU-uploadable sources (ImageBitmap…).
-    return resolveDrawable(this._videoSrc) ?? this._videoSrc ?? null;
-  }
+  // _resolveVideoSrc() — inherited from ShaderLayerBase
 
   _srcSize(src) {
     return [
@@ -344,23 +310,7 @@ export class Shader {
   // ── Uniforms ─────────────────────────────────────────────────────────────
 
   _writeUniforms(time) {
-    // Auto-fill custom[0..3] = [rms, bass, mid, high] if a signal is bound
-    if (this._boundSignal) {
-      const s = this._boundSignal;
-      this._custom[0] = s.value ?? 0;
-      this._custom[1] = s.bass  ?? 0;
-      this._custom[2] = s.mid   ?? 0;
-      this._custom[3] = s.high  ?? 0;
-    } else if (this._boundAnalyser) {
-      const bins = 32;
-      const fft  = _readShaderFft(this._boundAnalyser, bins);
-      const avg  = (s, e) => { let sum = 0; for (let i = s; i < e; i++) sum += fft[i]; return sum / (e - s) || 0; };
-      const e    = Math.floor(bins * 0.1), m = Math.floor(bins * 0.5);
-      this._custom[0] = avg(0, bins);
-      this._custom[1] = avg(0, e);
-      this._custom[2] = avg(e, m);
-      this._custom[3] = avg(m, bins);
-    }
+    this._packAudioCustom(); // auto-fill _custom[0..3] from bound signal/analyser (base)
 
     const c = this._canvas;
     const mo = window.__ar_shaderMouse ?? { x: 0, y: 0 };
@@ -416,7 +366,7 @@ export class Shader {
   // ── Public API ──────────────────────────────────────────────────────────
 
   start() {
-    this._live = liveOutput(this);
+    this._registerLive();
     (async () => {
       if (!this._device) await this._init();
       if (this._rafId) return;
@@ -428,7 +378,7 @@ export class Shader {
       notify('shader:start', { id: this._id });
     })().catch((e) => {
       console.error("Shader error:", e.message);
-      this._live?.release();
+      this._releaseLive();
     });
     return this;
   }
@@ -442,53 +392,11 @@ export class Shader {
     return this;
   }
 
-  // Set video / canvas source. Call before start(), or stop()/start() to swap.
-  video(src) {
-    this._videoSrc = src;
-    return this;
-  }
-
-  // Set custom uniform — vec4f accessible as `custom` in shader
-  set(indexOrArray, value) {
-    if (Array.isArray(indexOrArray)) {
-      for (let i = 0; i < 4; i++) this._custom[i] = indexOrArray[i] ?? 0;
-    } else {
-      this._custom[indexOrArray] = value;
-    }
-    notify('shader:uniform', { id: this._id, key: indexOrArray, value });
-    return this;
-  }
-
-  // Bind an audio source → auto-fills custom = [rms, bass, mid, high] every frame.
-  // source: audio.signal() obj | Tone.Analyser | Web Audio AnalyserNode | 'mic' | Tone node
-  bind(source) {
-    if (source && typeof source.bass !== 'undefined') {
-      this._boundSignal   = source;
-      this._boundAnalyser = null;
-    } else {
-      this._boundSignal   = null;
-      this._boundAnalyser = source;
-    }
-    return this;
-  }
-
-  get canvas() { return this._canvas; }
-
-  opacity(n) {
-    this._opacity = n;
-    if (this._canvas) this._canvas.style.opacity = String(n);
-    return this;
-  }
-
-  z(n) {
-    this._z = n;
-    if (this._canvas) this._canvas.style.zIndex = String(n);
-    return this;
-  }
+  // video(), set(), setUniform(), bind(), opacity(), z(), get canvas() — inherited from ShaderLayerBase
 
   _destroy() {
     this.stop();
-    this._live?.release();
+    this._releaseLive();
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     this._readable?.remove();

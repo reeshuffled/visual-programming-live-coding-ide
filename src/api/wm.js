@@ -10,6 +10,7 @@ import { notify, registerCommand, tween } from '../events/index.js';
 import { recordStream, compositeCanvasStream } from './recorder.js';
 import { acquireCamera, acquireMic } from './media-lease.js';
 import { TextLayer } from './text-layer.js';
+import { liveOutput } from '../runtime/keep-alive.js';
 
 // ── Paint-overlay WidgetEvents registry (for cleanupPaintOverlays) ────────────
 
@@ -229,10 +230,11 @@ export function initWM(onContentResize) {
   const _browseRefreshCbs = new Set();
   let spawnCounter = 0;
 
-  // Release a window from the owning editor's keepAlive set (if registered)
+  // Release a window from the keep-alive set it was registered into (if any).
+  // Uses the captured liveOutput handle — survives active-editor switches (ADR 009).
   function _releaseWin(win) {
-    win._wmKeepAliveSet?.delete(win);
-    win._wmKeepAliveSet = null;
+    win._live?.release();
+    win._live = null;
   }
 
   // ── Undo / redo history ───────────────────────────────────────────────────
@@ -241,21 +243,25 @@ export function initWM(onContentResize) {
   const _WM_HISTORY_MAX = 50;
   let _wmHistoryDebounce = null;
 
+  // Common window geometry + class fields — used by both _captureState (undo) and _flushState (persist).
+  function _winBaseEntry(win) {
+    return {
+      id:          win.id,
+      x:           parseInt(win.style.left)   || 0,
+      y:           parseInt(win.style.top)    || 0,
+      w:           parseInt(win.style.width)  || 320,
+      h:           parseInt(win.style.height) || 240,
+      visible:     win.style.display !== 'none' && !win._wmMinimized,
+      maximized:   win.classList.contains('wm-maximized'),
+      nochrome:    win.classList.contains('wm-no-chrome'),
+      transparent: win.classList.contains('wm-transparent'),
+    };
+  }
+
   function _captureState() {
     const wins = [];
     desktop.querySelectorAll('.wm-win').forEach(win => {
-      const entry = {
-        id: win.id,
-        x: parseInt(win.style.left)   || 0,
-        y: parseInt(win.style.top)    || 0,
-        w: parseInt(win.style.width)  || 320,
-        h: parseInt(win.style.height) || 240,
-        visible:     win.style.display !== 'none' && !win._wmMinimized,
-        maximized:   win.classList.contains('wm-maximized'),
-        nochrome:    win.classList.contains('wm-no-chrome'),
-        transparent: win.classList.contains('wm-transparent'),
-        _restore:    win._wmRestoreHandler ?? null,
-      };
+      const entry = { ..._winBaseEntry(win), _restore: win._wmRestoreHandler ?? null };
       if (spawnedIds.has(win.id)) {
         const opts = win._wmSpawnOpts;
         if (opts && !['canvas','shader','camera'].includes(opts.type)) {
@@ -355,17 +361,7 @@ export function initWM(onContentResize) {
   function _flushState() {
     const wins = [];
     desktop.querySelectorAll('.wm-win').forEach(win => {
-      const entry = {
-        id: win.id,
-        x: parseInt(win.style.left)  || 0,
-        y: parseInt(win.style.top)   || 0,
-        w: parseInt(win.style.width) || 320,
-        h: parseInt(win.style.height)|| 240,
-        visible:     win.style.display !== 'none' && !win._wmMinimized,
-        maximized:   win.classList.contains('wm-maximized'),
-        nochrome:    win.classList.contains('wm-no-chrome'),
-        transparent: win.classList.contains('wm-transparent'),
-      };
+      const entry = _winBaseEntry(win);
       if (spawnedIds.has(win.id)) {
         const opts = win._wmSpawnOpts;
         if (!opts) return;
@@ -2501,14 +2497,15 @@ export function initWM(onContentResize) {
       if (opts.z != null) win.style.zIndex = String(opts.z);
 
       // Register as a live output for the active editor run (if any).
-      // The editor's _isLive() checks _keepAlive; removing here lets the idle watcher
-      // detect that all outputs are gone and auto-stop.
+      // liveOutput() captures window.__ar_keepAlive at this moment (ADR 009) so
+      // release() works correctly even if the active editor changes before close.
+      // The editor's _isLive() checks _keepAlive; releasing here lets the idle
+      // watcher detect that all outputs are gone and auto-stop.
       const _activeEdId = window.__ar_active_editor_id;
       const _activeInst = _activeEdId != null ? window.__ar_instances?.get(_activeEdId) : null;
       if (_activeInst?.btnState === 'running' && id !== _activeInst.canvasWinId) {
-        _activeInst._keepAlive.add(win);
+        win._live = liveOutput(win);
         _activeInst._hadOutput = true;
-        win._wmKeepAliveSet = _activeInst._keepAlive;
       }
 
       _saveState();
