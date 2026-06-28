@@ -5,9 +5,11 @@
 import { WidgetEvents }  from './widget-events.js';
 import { insertSnippet } from '../editor/active-editor.js';
 import { FrameDoc } from './frame-doc.js';
-import { mountWidgetShell, buildFrameStrip, buildTransport } from './widget-shell.js';
+import { mountWidgetShell, buildFrameStrip, buildTransport, wireCaptureButton } from './widget-shell.js';
 import { onReset } from '../runtime/reset-registry.js';
 import { TextLayer } from './text-layer.js';
+import { Take } from './performance-recorder.js';
+import { replayActions } from './replay-clock.js';
 
 const _paints = [];
 
@@ -83,6 +85,9 @@ export class Paint {
     this._hitCanvas = null;  // transparent event-catching canvas in wrap
 
     this._events = new WidgetEvents();
+    this._take    = new Take(this);  // Performance capture (ADR 031)
+    this._recStroke = null;          // in-flight captured stroke action
+    this._recLast   = 0;             // last point timestamp (for per-point dt)
 
     // Frame model (canvas frames) — see frame-doc.js. Hooks supply the
     // raster-specific operations; the model owns frames/index/transport/onion.
@@ -173,6 +178,55 @@ export class Paint {
     return this;
   }
 
+  // ── Performance capture / replay (ADR 031) ──────────────────────────────────
+  // Draw a captured brush path. Points carry per-point `dt` (ms); the stroke
+  // animates over time via the patched setTimeout (run-scoped, pauses/cleans
+  // with the harness). Mirrors the pen/eraser midpoint-smoothing in _bindPointer.
+  stroke(pts, { tool = 'pen', color = this._color, size = this._brush } = {}) {
+    if (!pts || !pts.length) return this;
+    const fc = this._frames[this._fi];
+    if (!fc) return this;
+    const ctx = fc.getContext('2d');
+    const style = () => {
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = size;
+      if (tool === 'eraser') { ctx.globalCompositeOperation = 'destination-out'; ctx.strokeStyle = ctx.fillStyle = 'rgba(0,0,0,1)'; }
+      else                   { ctx.globalCompositeOperation = 'source-over';     ctx.strokeStyle = ctx.fillStyle = color; }
+    };
+    const dot = (cur) => { ctx.save(); style(); ctx.beginPath(); ctx.arc(cur.x, cur.y, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.restore(); this._render(); };
+    const seg = (prev2, prev, cur) => {
+      ctx.save(); style(); ctx.beginPath();
+      if (prev2) {
+        ctx.moveTo((prev2.x + prev.x) / 2, (prev2.y + prev.y) / 2);
+        ctx.quadraticCurveTo(prev.x, prev.y, (prev.x + cur.x) / 2, (prev.y + cur.y) / 2);
+      } else { ctx.moveTo(prev.x, prev.y); ctx.lineTo(cur.x, cur.y); }
+      ctx.stroke(); ctx.restore(); this._render();
+    };
+    let acc = 0;
+    pts.forEach((pt, i) => {
+      acc += (pt.dt || 0);
+      const run = () => { if (i === 0) dot(pt); else seg(pts[i - 2] || null, pts[i - 1], pt); };
+      if (acc <= 0) run(); else window.setTimeout(run, acc);
+    });
+    return this;
+  }
+
+  _applyAction(a) {
+    if (!a) return;
+    if (a.op === 'frame')       this.frame(a.i);
+    else if (a.op === 'stroke') this.stroke(a.pts, { tool: a.tool, color: a.color, size: a.size });
+  }
+
+  replay(actions, opts) {
+    return replayActions(act => this._applyAction(act), actions, opts);
+  }
+
+  _perfCtor() {
+    return {
+      varName: 'pt',
+      code: `const pt = new Paint({ title: '${String(this._title).replace(/'/g, "\\'")}', width: ${this._w}, height: ${this._h} });`,
+    };
+  }
+
   play(fps = 8) { this._fd.play(fps); return this; }
   stop()        { this._fd.stop(); return this; }
 
@@ -212,6 +266,8 @@ export class Paint {
         mkExport('<i class="fa-solid fa-code"></i> Code',    '#89b4fa', () => this._exportCode()),
         mkExport('<i class="fa-solid fa-download"></i> PNG', '#a6e3a1', () => this._exportPng(false)),
         mkExport('<i class="fa-solid fa-film"></i> Sheet',   '#f9e2af', () => this._exportPng(true)),
+        wireCaptureButton(mkExport('<i class="fa-solid fa-circle"></i> Rec', '#f38ba8', () => {}),
+                          { take: this._take, widget: this, idleLabel: '⏺ Rec' }),
       ],
     });
 
@@ -850,6 +906,10 @@ export class Paint {
       this._lastXY = p;
       this._prevXY = null;
       this._expandBbox(p.x, p.y);
+      // Performance capture: open a stroke action; points appended on move. `t`
+      // is stamped at stroke start, internal dt drives animated replay.
+      this._recStroke = this._take.push({ op: 'stroke', tool: this._tool, color: this._color, size: this._brush, pts: [{ x: p.x, y: p.y, dt: 0 }] });
+      this._recLast   = performance.now();
       ctx.save();
       ctx.lineCap  = 'round';
       ctx.lineJoin = 'round';
@@ -914,6 +974,11 @@ export class Paint {
       this._prevXY = lp;
       this._lastXY = p;
       this._expandBbox(p.x, p.y);
+      if (this._recStroke) {
+        const now = performance.now();
+        this._recStroke.pts.push({ x: p.x, y: p.y, dt: Math.round(now - this._recLast) });
+        this._recLast = now;
+      }
       this._render();
     });
 
@@ -922,6 +987,7 @@ export class Paint {
       this._drawing = false;
       this._prevXY  = null;
       this._lastXY  = null;
+      this._recStroke = null;   // close captured stroke
 
       if (this._startXY && (this._tool === 'line' || this._tool === 'rect' || this._tool === 'ellipse')) {
         const p = this._xyCoord(e);

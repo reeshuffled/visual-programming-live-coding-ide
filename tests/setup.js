@@ -31,6 +31,13 @@ if (!global.window.matchMedia) {
   global.window.matchMedia = () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} });
 }
 
+// jsdom doesn't implement HTMLMediaElement play/pause — camera.js calls
+// element.play().catch(...) on its off-DOM <video>. Stub to a resolved promise.
+if (typeof HTMLMediaElement !== 'undefined') {
+  HTMLMediaElement.prototype.play  = function () { return Promise.resolve(); };
+  HTMLMediaElement.prototype.pause = function () {};
+}
+
 // jsdom doesn't implement canvas getContext — stub it so modules can call
 // canvas APIs without crashing.
 function _makeCtx2d(canvas) {

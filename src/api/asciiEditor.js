@@ -5,8 +5,10 @@
 import { WidgetEvents }  from './widget-events.js';
 import { insertSnippet } from '../editor/active-editor.js';
 import { FrameDoc } from './frame-doc.js';
-import { mountWidgetShell, buildFrameStrip, buildTransport } from './widget-shell.js';
+import { mountWidgetShell, buildFrameStrip, buildTransport, wireCaptureButton } from './widget-shell.js';
 import { onReset } from '../runtime/reset-registry.js';
+import { Take } from './performance-recorder.js';
+import { replayActions } from './replay-clock.js';
 
 const _editors = [];
 
@@ -97,6 +99,8 @@ export class AsciiEditor {
     this._mousedownFn = null;
 
     this._events       = new WidgetEvents();
+    this._take         = new Take(this);   // Performance capture (ADR 031)
+    this._replaying    = false;            // gates capture during replay/programmatic apply
     this._strokeBbox   = null;   // { minC, minR, maxC, maxR } during pointer drag
     this._cellEventsOn = true;   // false during _resizeGrid / programmatic frame load
 
@@ -188,7 +192,40 @@ export class AsciiEditor {
     frameArr[r * this._cols + c] = cell;
     if (this._cellEventsOn) {
       this._events.emit('cell', { c, r, ch: cell.ch, fg: cell.fg, bg: cell.bg, frame: this._fi });
+      // Performance capture: every user cell mutation (brush/line/rect/fill funnels
+      // through here). Skipped during replay so re-applying does not re-record.
+      if (!this._replaying) this._take.push({ op: 'cell', c, r, ch: cell.ch, fg: cell.fg, bg: cell.bg });
     }
+  }
+
+  // ── Performance capture / replay (ADR 031) ──────────────────────────────────
+  // Public cell setter — the replay verb and a scriptable single-cell write.
+  cell(c, r, ch, fg = this._fg, bg = this._cellBg) {
+    const frame = this._frames[this._fi];
+    if (!frame) return this;
+    this._setCell(frame, c, r, { ch, fg, bg });
+    this._render();
+    return this;
+  }
+
+  _applyAction(a) {
+    if (!a) return;
+    this._replaying = true;
+    try {
+      if (a.op === 'frame')      this.frame(a.i);
+      else if (a.op === 'cell')  this.cell(a.c, a.r, a.ch, a.fg, a.bg);
+    } finally { this._replaying = false; }
+  }
+
+  replay(actions, opts) {
+    return replayActions(act => this._applyAction(act), actions, opts);
+  }
+
+  _perfCtor() {
+    return {
+      varName: 'ed',
+      code: `const ed = new AsciiEditor({ title: '${String(this._title).replace(/'/g, "\\'")}', cols: ${this._cols}, rows: ${this._rows} });`,
+    };
   }
 
   // ── Window init ───────────────────────────────────────────────────────────────
@@ -220,6 +257,8 @@ export class AsciiEditor {
         mkExport('<i class="fa-solid fa-code"></i> Code',       '#89b4fa', () => this._exportCode()),
         mkExport('<i class="fa-solid fa-align-left"></i> Text', '#a6e3a1', () => this._exportText()),
         mkExport('<i class="fa-solid fa-terminal"></i> ANSI',   '#f9e2af', () => this._exportANSI()),
+        wireCaptureButton(mkExport('<i class="fa-solid fa-circle"></i> Rec', '#f38ba8', () => {}),
+                          { take: this._take, widget: this, idleLabel: '⏺ Rec' }),
       ],
     });
 
@@ -255,7 +294,7 @@ export class AsciiEditor {
     this._history       = shell.history;
 
     fd.on('mutate', (e) => { this._render(); this._history?.commit(); this._autoSave(); this._events.emit('frame', e); });
-    fd.on('select', (e) => { this._render(); this._events.emit('frame', { action: 'select', index: e.index, count: e.count }); });
+    fd.on('select', (e) => { this._render(); if (!this._replaying) this._take.push({ op: 'frame', i: e.index }); this._events.emit('frame', { action: 'select', index: e.index, count: e.count }); });
     fd.on('tick',   () => this._render());
     fd.on('onion',  () => this._render());
 

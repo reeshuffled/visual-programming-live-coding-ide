@@ -4,8 +4,10 @@
 import { Sprite } from './sprite.js';
 import { WidgetEvents }  from './widget-events.js';
 import { insertSnippet } from '../editor/active-editor.js';
-import { mountWidgetShell, buildFrameStrip, buildTransport } from './widget-shell.js';
+import { mountWidgetShell, buildFrameStrip, buildTransport, wireCaptureButton } from './widget-shell.js';
 import { onReset } from '../runtime/reset-registry.js';
+import { Take } from './performance-recorder.js';
+import { replayActions } from './replay-clock.js';
 
 // FrameController adapter over a Sprite — the second implementation of the
 // interface buildFrameStrip()/buildTransport() consume (FrameDoc is the first).
@@ -131,6 +133,7 @@ export class SpriteEditor {
     this._refreshThumbs = () => {};
 
     this._events = new WidgetEvents();
+    this._take   = new Take(this);   // Performance capture (ADR 031)
     _editors.push(this);
     this._init(title, x, y);
     if (!_desktopIconId) this._autoSave();
@@ -169,6 +172,8 @@ export class SpriteEditor {
         mkExport('<i class="fa-solid fa-code"></i> Code',    '#89b4fa', () => this._exportCode()),
         mkExport('<i class="fa-solid fa-download"></i> PNG', '#a6e3a1', () => this._exportPng(false)),
         mkExport('<i class="fa-solid fa-film"></i> Sheet',   '#f9e2af', () => this._exportPng(true)),
+        wireCaptureButton(mkExport('<i class="fa-solid fa-circle"></i> Rec', '#f38ba8', () => {}),
+                          { take: this._take, widget: this, idleLabel: '⏺ Rec' }),
       ],
     });
 
@@ -204,7 +209,7 @@ export class SpriteEditor {
 
     // Sprite renders inside the adapter ops; here we only persist + re-emit.
     fd.on('mutate', (e) => { this._history?.commit(); this._autoSave(); this._events.emit('frame', e); });
-    fd.on('select', (e) => { this._events.emit('frame', { action: 'select', index: e.index, count: e.count }); });
+    fd.on('select', (e) => { this._take.push({ op: 'frame', i: e.index }); this._events.emit('frame', { action: 'select', index: e.index, count: e.count }); });
   }
 
   // ── Pixel snapshots (for undo/redo — raw RGBA, not PNG) ──────────────────────
@@ -490,9 +495,29 @@ export class SpriteEditor {
   _paintAt(px, py) {
     const color = this._tool === 'eraser' ? 'transparent' : this._color;
     this.sprite.pixel(px, py, color);
+    this._take.push({ op: 'pixel', x: px, y: py, color });
     this._events.emit('pixel', { x: px, y: py, color, frame: this.sprite._fi });
     this._history?.commit();
     this._autoSave();
+  }
+
+  // ── Performance capture / replay (ADR 031) ──────────────────────────────────
+  _applyAction(a) {
+    if (!a) return;
+    if (a.op === 'frame')      this.sprite.frame(a.i);
+    else if (a.op === 'pixel') this.sprite.pixel(a.x, a.y, a.color);
+  }
+
+  replay(actions, opts) {
+    return replayActions(act => this._applyAction(act), actions, opts);
+  }
+
+  _perfCtor() {
+    const sp = this.sprite;
+    return {
+      varName: 'sp',
+      code: `const sp = new SpriteEditor({ title: '${String(this._title).replace(/'/g, "\\'")}', width: ${sp._w}, height: ${sp._h}, scale: ${this._scale} });`,
+    };
   }
 
   _eyedrop(px, py) {

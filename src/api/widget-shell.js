@@ -9,9 +9,37 @@
 // transport from their FrameDoc. Drumpad (no frames) simply skips those.
 
 import { WidgetHistory } from './widget-history.js';
+import { insertSnippet } from '../editor/active-editor.js';
+import { buildReplayCode } from './performance-recorder.js';
 
 const ACTIVE_COLOR    = '#cba6f7';
 const INACTIVE_BORDER = '#45475a';
+
+// ── Capture button (Performance recording, ADR 031) ───────────────────────────
+// Wire a widget-supplied button to toggle a Take: first click arms, second click
+// disarms and inserts `<ctor>; <var>.replay([...])` into the active editor. Solo
+// capture; the desktop-level Global Capture is a separate path. `idleLabel` is
+// restored on stop. The widget must implement `_perfCtor()`/`_applyAction()`.
+export function wireCaptureButton(btn, { take, widget, idleLabel = '● Rec' }) {
+  btn.title = 'Capture a performance → replay code';
+  let recording = false;
+  btn.addEventListener('click', () => {
+    recording = !recording;
+    if (recording) {
+      take.arm();
+      btn.textContent  = '■ Stop';
+      btn.style.color  = '#f38ba8';
+      btn.dataset.recording = '1';
+    } else {
+      const actions = take.disarm();
+      btn.textContent = idleLabel;
+      btn.style.color = '';
+      delete btn.dataset.recording;
+      if (actions.length) insertSnippet(buildReplayCode(widget, actions));
+    }
+  });
+  return btn;
+}
 
 // ── Frame strip ──────────────────────────────────────────────────────────────
 // `ctrl` is a FrameController (FrameDoc, or a Sprite adapter). The builder owns

@@ -21,6 +21,9 @@ import { initProjectManager } from "../api/project-manager.js";
 import { initDOMCaptures, captureWindow as _captureWindow, cleanupCaptures } from "../editor/editor-capture.js";
 import { pipe, Source, cleanupPipelines } from "../api/render-pipeline.js";
 import { route } from "../api/route.js";
+import { timeline } from "../api/timeline.js";
+import { armGlobal, disarmGlobal, isGlobalArmed, buildTimelineCode } from "../api/performance-recorder.js";
+import { insertSnippet } from "../editor/active-editor.js";
 import { library, initLibrary, populateLibraryToolkit, populateLibraryBlocks } from "../api/library.js";
 import { initWM } from "../api/wm.js";
 import { installWidgetHistoryKeys } from "../api/widget-history.js";
@@ -77,6 +80,7 @@ _registerBuiltin('GLSL_PRESETS', GLSL_PRESETS);
 _registerBuiltin('pipe',    pipe);
 _registerBuiltin('Source',  Source);
 _registerBuiltin('route',   route);
+_registerBuiltin('timeline', timeline);
 _registerBuiltin('PIXI',     PIXI);
 // Vector constructor stubs — used as type hints in Shader JS function params.
 // In the JS function body these are real values; the transpiler maps them to WGSL vec types.
@@ -739,6 +743,25 @@ window.onload = () => {
   // ── "Run All" button ──────────────────────────────────────────────────────
   document.getElementById('runAllBtn')?.addEventListener('click', () => {
     window.__ar_instances.forEach(inst => inst.execute());
+  });
+
+  // ── Global Capture (Performance recording across all widgets, ADR 031) ───────
+  // First click arms every open widget on one shared clock; second click stops
+  // and inserts a single timeline() composing one track per widget.
+  const _gcBtn = document.getElementById('globalCaptureBtn');
+  _gcBtn?.addEventListener('click', () => {
+    if (!isGlobalArmed()) {
+      armGlobal();
+      _gcBtn.classList.add('recording');
+      _gcBtn.style.color = '#f38ba8';
+      _gcBtn.dataset.tip = 'Stop global capture → timeline code';
+    } else {
+      const tracks = disarmGlobal();
+      _gcBtn.classList.remove('recording');
+      _gcBtn.style.color = '';
+      _gcBtn.dataset.tip = 'Capture all widgets → timeline code';
+      if (tracks.length) insertSnippet(buildTimelineCode(tracks));
+    }
   });
 
   // ── "New Visualizer" button ────────────────────────────────────────────────

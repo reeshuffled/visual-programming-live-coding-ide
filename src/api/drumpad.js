@@ -13,8 +13,10 @@
 import * as Tone from 'tone';
 import { WidgetEvents }  from './widget-events.js';
 import { insertSnippet } from '../editor/active-editor.js';
-import { mountWidgetShell } from './widget-shell.js';
+import { mountWidgetShell, wireCaptureButton } from './widget-shell.js';
 import { onReset } from '../runtime/reset-registry.js';
+import { Take } from './performance-recorder.js';
+import { replayActions } from './replay-clock.js';
 
 // ── Module-level registry ─────────────────────────────────────────────────────
 
@@ -110,6 +112,7 @@ export class Drumpad {
 
     // ── Event/signal hook state ───────────────────────────────────────────────
     this._events = new WidgetEvents();
+    this._take   = new Take(this);   // Performance capture (ADR 031)
     _drumpads.push(this);
 
     this._init(title, x, y, w, h);
@@ -146,6 +149,34 @@ export class Drumpad {
       else        v.synth.triggerAttackRelease(v.dur, time);
     } catch (_) {}
     this._fireHit(vi, ctx.source ?? 'pad', ctx.step ?? null);
+  }
+
+  // ── Performance capture / replay (ADR 031) ──────────────────────────────────
+  // Public one-shot trigger — the replay verb. Does NOT record (replay must not
+  // re-capture); live pad/key input records via this._take.push() at the input
+  // sites instead.
+  hit(voice) {
+    const vi = this._voiceIndex(voice);
+    if (vi != null) this._trigger(vi, Tone.now(), { source: 'replay' });
+    return this;
+  }
+
+  // Apply one recorded action {t, vi}.
+  _applyAction(a) {
+    if (a && a.vi != null) this._trigger(a.vi, Tone.now(), { source: 'replay' });
+  }
+
+  // Replay a captured Take.
+  replay(actions, opts) {
+    return replayActions(a => this._applyAction(a), actions, opts);
+  }
+
+  // Self-contained constructor code for the emitted snippet/timeline track.
+  _perfCtor() {
+    return {
+      varName: 'dp',
+      code: `const dp = audio.drumpad({ title: '${String(this._title).replace(/'/g, "\\'")}', bpm: ${this._bpm} });`,
+    };
   }
 
   // ── Build the window ─────────────────────────────────────────────────────────
@@ -219,7 +250,7 @@ export class Drumpad {
         }, 100);
       };
 
-      pad.addEventListener('pointerdown', (e) => { e.preventDefault(); this._trigger(vi, Tone.now(), { source: 'pad' }); flash(); });
+      pad.addEventListener('pointerdown', (e) => { e.preventDefault(); this._take.push({ vi }); this._trigger(vi, Tone.now(), { source: 'pad' }); flash(); });
       v._pad   = pad;
       v._flash = flash;
       this._keyMap[v.key] = vi;
@@ -363,12 +394,18 @@ export class Drumpad {
       insertSnippet(code);
     });
 
+    // ── Capture ● (Performance recording → replay code) ───────────────────────
+    const capBtn = _mkBtn('● Rec', '#f38ba8');
+    capBtn.style.padding = '3px 7px';
+    wireCaptureButton(capBtn, { take: this._take, widget: this });
+
     ctrl.appendChild(playBtn);
     ctrl.appendChild(stopBtn);
     ctrl.appendChild(clearBtn);
     ctrl.appendChild(bpmLbl);
     ctrl.appendChild(bpmIn);
     ctrl.appendChild(codeBtn);
+    ctrl.appendChild(capBtn);
     body.appendChild(ctrl);
 
     // ── Keyboard triggers ─────────────────────────────────────────────────────
@@ -376,7 +413,7 @@ export class Drumpad {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.target instanceof HTMLInputElement) return;
       const vi = this._keyMap[e.key?.toLowerCase()];
-      if (vi != null) { this._trigger(vi, Tone.now(), { source: 'key' }); this._voices[vi]._flash?.(); }
+      if (vi != null) { this._take.push({ vi }); this._trigger(vi, Tone.now(), { source: 'key' }); this._voices[vi]._flash?.(); }
     };
     document.addEventListener('keydown', this._onKey);
 

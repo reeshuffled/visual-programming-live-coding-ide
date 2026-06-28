@@ -21,7 +21,7 @@ import * as esprima from 'esprima';
 const KNOWN_GLOBALS = new Set([
   // Core API objects
   'audio', 'draw', 'wm', 'midi', 'external', 'shell', 'desktop',
-  'video', 'vision', 'pipe', 'route', 'ascii', 'monitor', 'signalGraph', 'library',
+  'video', 'vision', 'pipe', 'route', 'timeline', 'ascii', 'monitor', 'signalGraph', 'library',
   // Constructors / classes
   'Shader', 'GLShader', 'ShaderFX', 'GLSL_PRESETS',
   'Camera', 'Media', 'Source',

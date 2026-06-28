@@ -707,6 +707,46 @@ Multi-layer output windows (draw + pixi + shader) are automatically composited i
 
 ---
 
+## Performance capture & replay — `timeline`, `.replay()`
+
+Record what you *do* on a widget over time, then replay it as code. This is **not** video (`Recording`) and **not** a state snapshot (the `</>` / Code button) — it captures timestamped **actions** (a piano note at t=300ms, a brush stroke at t=1100ms) and emits code that replays them on the harness clock. See ADR 031.
+
+Every interactive widget (Drumpad, Piano, SpriteEditor, AsciiEditor, Notepad, Paint) has a **Capture ●** button:
+
+1. Click **● Rec** → start a **Take**. Use the widget normally.
+2. Click **■ Stop** → the captured performance is inserted into the active editor as runnable code.
+
+A solo capture emits `<ctor>; <var>.replay([...])`. The desktop **Global Capture ●** (top toolbar) arms every open widget on one shared clock and emits a single `timeline()` composing one track per widget.
+
+```js
+// Solo — replay a recorded take
+const p = new Piano({ preset: 'epiano' });
+p.replay([
+  { t: 0,   note: 'C4', dur: 200 },
+  { t: 300, note: 'E4', dur: 200 },
+  { t: 600, note: 'G4', dur: 400 },
+], { loop: false });
+
+// Multi-widget — compose & splice takes at offsets (wall-clock ms)
+timeline()
+  .track(p,  pianoTake, { at: 0 })
+  .track(p,  fillTake,  { at: 4000 })   // same widget, spliced later
+  .track(dp, drumTake,  { at: 0 })
+  .play({ loop: true });
+```
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `widget.replay(actions, { loop? })` | replay handle (`.stop()`) | Single-track replay bound to the widget |
+| `timeline()` | `Timeline` | Multi-track scheduler |
+| `tl.track(widget, actions, { at? })` | `tl` | Place a take at offset `at` ms (default 0) |
+| `tl.play({ loop? })` | `tl` | Start all tracks on one clock |
+| `tl.stop()` | `tl` | Stop the timeline |
+
+Per-widget action verbs used by replay (also callable directly): `dp.hit(voice)`, `p.strike(note, durMs)`, `sp.pixel(x,y,color)`, `ed.cell(c,r,ch,fg,bg)`, `pt.stroke(pts, {tool,color,size})`, `np.insert(text)`. Action schemas: Drumpad `{t,vi}` · Piano `{t,note,dur}` · Sprite `{t,op:'pixel'|'frame',…}` · Ascii `{t,op:'cell'|'frame',…}` · Notepad `{t,ch}` (`'\b'`=backspace) · Paint `{t,op:'stroke',tool,color,size,pts:[{x,y,dt}]}`. All times are wall-clock ms from take start. Replays are run-scoped (stop on reset) and keep the run alive while playing; performances are never saved to `.vljson` — the emitted code is their persistence.
+
+---
+
 ## Vision — `vision`
 
 MediaPipe. Camera must be enabled in toolbar. Results at ~10fps.

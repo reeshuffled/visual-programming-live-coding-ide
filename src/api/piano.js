@@ -13,8 +13,10 @@
 import * as Tone from 'tone';
 import { WidgetEvents }    from './widget-events.js';
 import { insertSnippet }   from '../editor/active-editor.js';
-import { mountWidgetShell } from './widget-shell.js';
+import { mountWidgetShell, wireCaptureButton } from './widget-shell.js';
 import { onReset }         from '../runtime/reset-registry.js';
+import { Take }            from './performance-recorder.js';
+import { replayActions }   from './replay-clock.js';
 
 // ── Module-level registry ─────────────────────────────────────────────────────
 
@@ -140,6 +142,8 @@ export class Piano {
     this._kbdMap        = this._buildKbdMap();
     this._presetName    = initPreset;
     this._heldNotes     = new Set();
+    this._take          = new Take(this);   // Performance capture (ADR 031)
+    this._recNotes      = new Map();         // note → { rec, start } for dur back-fill
     this._steps         = Array.from({ length: 16 }, () => new Set());
     this._selectedStep  = null;
     this._seqStep       = 0;
@@ -561,6 +565,12 @@ export class Piano {
     ctrl.appendChild(volLbl);
     ctrl.appendChild(volSlider);
     ctrl.appendChild(codeBtn);
+
+    // ── Capture ● (Performance recording → replay code) ───────────────────────
+    const capBtn = _mkBtn('● Rec', '#f38ba8');
+    capBtn.style.padding = '3px 7px';
+    wireCaptureButton(capBtn, { take: this._take, widget: this });
+    ctrl.appendChild(capBtn);
     return ctrl;
   }
 
@@ -655,6 +665,13 @@ export class Piano {
     try { this._synth.triggerAttack(note, Tone.now()); } catch (_) {}
     this._setKeyActive(note, true);
     this._fireNote(note, source, null);
+    // Performance capture: record live attacks; dur is back-filled on release.
+    // Replay-driven attacks (source 'replay') are excluded so replay never
+    // re-records.
+    if (source !== 'replay') {
+      const rec = this._take.push({ note, dur: 0 });
+      if (rec) this._recNotes.set(note, { rec, start: performance.now() });
+    }
   }
 
   /** pointerup / pointerleave / keyup → release note */
@@ -663,6 +680,9 @@ export class Piano {
     this._heldNotes.delete(note);
     try { this._synth.triggerRelease(note, Tone.now()); } catch (_) {}
     this._setKeyActive(note, false);
+    this._events.emit('note:off', { note, midi: noteToMidi(note) });
+    const e = this._recNotes.get(note);
+    if (e) { e.rec.dur = Math.max(1, Math.round(performance.now() - e.start)); this._recNotes.delete(note); }
   }
 
   _fireNote(note, source, step) {
@@ -670,6 +690,29 @@ export class Piano {
     const ev   = { note, midi, velocity: 1, source, step };
     this._events.emit('note', ev);
     this._events.emit(`note:${note}`, ev);
+  }
+
+  // ── Performance capture / replay (ADR 031) ──────────────────────────────────
+  // Public timed-note verb: attack now, release after `dur` ms (patched
+  // setTimeout → run-scoped, pauses/cleans with the harness).
+  strike(note, dur = 200) {
+    this._triggerAttack(note, 'replay');
+    const ms = typeof dur === 'number' && dur > 0 ? dur : 200;
+    window.setTimeout(() => this._triggerRelease(note), ms);
+    return this;
+  }
+
+  _applyAction(a) { if (a && a.note) this.strike(a.note, a.dur); }
+
+  replay(actions, opts) {
+    return replayActions(act => this._applyAction(act), actions, opts);
+  }
+
+  _perfCtor() {
+    return {
+      varName: 'p',
+      code: `const p = new Piano({ title: '${String(this._title).replace(/'/g, "\\'")}', bpm: ${this._bpm}, preset: '${this._presetName}', duration: '${this._duration}' });`,
+    };
   }
 
   _toggleNoteInStep(note, stepIdx) {

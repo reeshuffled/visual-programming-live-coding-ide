@@ -12,8 +12,10 @@
 //   - No WidgetHistory hooks — contenteditable uses native undo (widget-history.js:33 bails).
 
 import { notify, subscribe } from '../events/index.js';
-import { mountWidgetShell }  from './widget-shell.js';
+import { mountWidgetShell, wireCaptureButton } from './widget-shell.js';
 import { onReset }           from '../runtime/reset-registry.js';
+import { Take } from './performance-recorder.js';
+import { replayActions } from './replay-clock.js';
 
 // ── Module-level registry ──────────────────────────────────────────────────────
 
@@ -178,6 +180,19 @@ function _buildToolbar(note) {
   clearBtn.addEventListener('mousedown', (e) => { e.preventDefault(); note.clear(); });
   bar.appendChild(clearBtn);
 
+  addSep();
+
+  // Capture ● (Performance recording → replay code)
+  const capBtn = document.createElement('button');
+  capBtn.textContent = '● Rec'; capBtn.title = 'Capture a performance → replay code';
+  Object.assign(capBtn.style, {
+    background: '#e8e4dc', border: '1px solid #ccc8be', borderRadius: '3px',
+    padding: '2px 6px', cursor: 'pointer', fontSize: '11px', color: '#c0392b',
+    lineHeight: '1.4',
+  });
+  wireCaptureButton(capBtn, { take: note._take, widget: note });
+  bar.appendChild(capBtn);
+
   return bar;
 }
 
@@ -219,6 +234,8 @@ export class Notepad {
     this._typingTimers   = new Set();     // active type()/backspace() setInterval ids
     this._changeTimer    = null;          // debounce timer for note:change
     this._selListener    = null;          // document selectionchange handler
+    this._take           = new Take(this);// Performance capture (ADR 031)
+    this._replaying      = false;         // gates capture during replay/programmatic apply
 
     _notepads.push(this);
     this._init(title, x, y, w, h, content);
@@ -265,8 +282,18 @@ export class Notepad {
       if (!hasHtml) this._el.textContent = initialContent;
     }
 
-    // User-typed input → autosave + note:change
-    this._el.addEventListener('input', () => {
+    // User-typed input → autosave + note:change (+ Performance capture)
+    this._el.addEventListener('input', (e) => {
+      if (!this._replaying) {
+        const it = e.inputType;
+        if ((it === 'insertText' || it === 'insertCompositionText') && e.data) {
+          for (const ch of e.data) this._take.push({ ch });
+        } else if (it === 'insertParagraph' || it === 'insertLineBreak') {
+          this._take.push({ ch: '\n' });
+        } else if (typeof it === 'string' && it.startsWith('deleteContent')) {
+          this._take.push({ ch: '\b' });
+        }
+      }
       this._mutate();
       this._autoSave();
     });
@@ -472,6 +499,34 @@ export class Notepad {
     this.delete(from, to);
     this.insert(text, from);
     return this;
+  }
+
+  // ── Performance capture / replay (ADR 031) ──────────────────────────────────
+  // Apply one recorded char. '\b' deletes the char before the caret; '\n' and
+  // text both insert. Guarded by _replaying so the resulting 'input' event from
+  // insert()/delete() (execCommand) does not re-record.
+  _applyAction(a) {
+    if (!a || a.ch == null) return;
+    this._replaying = true;
+    try {
+      if (a.ch === '\b') {
+        const p = this._caretPos();
+        if (p > 0) this.delete(p - 1, p);
+      } else {
+        this.insert(a.ch);
+      }
+    } finally { this._replaying = false; }
+  }
+
+  replay(actions, opts) {
+    return replayActions(act => this._applyAction(act), actions, opts);
+  }
+
+  _perfCtor() {
+    return {
+      varName: 'np',
+      code: `const np = new Notepad({ title: '${String(this._title).replace(/'/g, "\\'")}' });`,
+    };
   }
 
   // ── Public API — animation ────────────────────────────────────────────────

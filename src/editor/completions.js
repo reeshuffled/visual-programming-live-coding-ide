@@ -2472,6 +2472,29 @@ audio.start();`,
       },
     ],
   },
+  {
+    name: "Performance",
+    commands: [
+      {
+        label: "replay a take",
+        code: "const p = new Piano({ preset: 'epiano' });\np.replay([\n  { t: 0,   note: 'C4', dur: 200 },\n  { t: 300, note: 'E4', dur: 200 },\n  { t: 600, note: 'G4', dur: 400 },\n]);",
+        hint: "Replay a recorded performance (Take) as timed code. Use a widget's Capture ● button to record one.",
+        tags: ["performance", "replay", "take", "record"],
+      },
+      {
+        label: "timeline (multi-widget)",
+        code: "timeline()\n  .track(p,  pianoTake, { at: 0 })\n  .track(dp, drumTake,  { at: 0 })\n  .play();",
+        hint: "Compose recorded Takes across multiple widgets on one clock. `at` offsets a take so you can splice different takes at different times.",
+        tags: ["timeline", "performance", "replay", "compose", "splice"],
+      },
+      {
+        label: "loop a take",
+        code: "p.replay(take, { loop: true });",
+        hint: "Replay a Take on repeat. Same for timeline().play({ loop: true }).",
+        tags: ["performance", "replay", "loop"],
+      },
+    ],
+  },
 ];
 
 function _getObjProps(obj) {

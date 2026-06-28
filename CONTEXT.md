@@ -41,6 +41,21 @@ The DOM-free animation frame model (`src/api/frame-doc.js`): an ordered list of 
 ### Active Editor
 The Editor Instance that most recently ran (tracked as `window.__ar_active_editor_id`). The **Active Editor seam** (`src/editor/active-editor.js`) is the one place that inserts generated code into it — `insertSnippet(code)` appends at the document end, places the cursor, focuses, and falls back to the clipboard when no editor is active. Creative-widget export buttons call it instead of poking CodeMirror's `dispatch` directly.
 
+### Snapshot
+A **declarative** export of a widget's current state as runnable code — the end result with no timing. Drumpad emits `dp.pattern(...)`, Piano emits `p.note(...)`, Paint/Sprite/Ascii emit `draw.image(dataUrl)`. Reproduces *what the widget looks like now*, not *how it got there*. Distinct from a **Performance** (which carries time) and from a **Recording** (which is video). Triggered by each widget's `</>` button via the **Active Editor** seam.
+
+### Performance
+A **temporal** export: a recorded sequence of timestamped widget actions (a piano note at t=300ms, a brush stroke at t=1100ms). Reproduces *how the result was made over time*, not just the end state. Captured between **Capture ●** and Stop on a widget. Timestamps are wall-clock milliseconds from the start of the **Take**. A Performance is replayed via **Replay**, never persisted to a project file — the emitted code *is* its persistence. **Not** a video — that is a **Recording**.
+
+### Take
+One Capture→Stop span on a single widget. The unit a Performance is recorded into. Multiple takes (even of the same widget) can be spliced at different offsets inside a **Timeline**.
+
+### Replay
+Re-executing a Performance as scheduled code. Each widget exposes `.replay(actions)` — a single-track replay bound to that widget — which constructs nothing and schedules the captured actions on the harness clock (patched `setTimeout`, so it pauses and cleans with the run; same rationale as `tick()`/Route timeline). A replay self-registers as a live output while playing.
+
+### Timeline
+The composition primitive (`window.timeline`) that schedules multiple **Takes** across multiple widgets on one shared clock. Each `.track(widget, actions, { at })` places a take at an offset (wall-clock ms), so different takes — including several of the same widget — can be spliced at different times by hand. `.replay()` is the degenerate one-track case. A **Global Capture ●** (desktop-level) arms every open widget at once and emits a multi-track Timeline; per-widget Capture emits a solo `.replay()`.
+
 ### Drawable Source
 Any object the visual APIs can treat as a frame source: a `Layer`, a `CameraStream`, a bare `<video>`/`<canvas>`, or a `GLShader`/`Shader` instance. **Resolving** a Drawable Source means reducing it to the underlying `canvas` or `video` element. The sync resolver (`resolveDrawable`) handles these object forms only; string forms (`'camera'`, image URLs) are a separate async concern layered on by `draw.backdrop` (see ADR 006).
 
