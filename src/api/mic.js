@@ -42,28 +42,33 @@ export function initMic() {
   // _startMic: called by media-lease on 0→1 (first consumer).
   const _startMic = () => {
     if (currentStream) return; // already live (re-entry guard)
+    // Create AudioContext synchronously so it starts in 'running' state when
+    // called from a user gesture (e.g. mic toolbar click). Creating it inside
+    // .then() leaves it suspended on Chrome (async context, no user gesture).
+    if (!audioCtx) {
+      audioCtx = new AudioContext();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 128;
+      window.__ar_mic_analyser = analyser;
+    }
     navigator.mediaDevices
       .getUserMedia({ audio: true, video: false })
       .then((stream) => {
         currentStream = stream;
         window.__ar_mic_stream = stream;
-
-        // Wire up Web Audio analyser
-        if (!audioCtx) {
-          audioCtx = new AudioContext();
-          analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 128;
-          window.__ar_mic_analyser = analyser;
-        }
         audioCtx.createMediaStreamSource(currentStream).connect(analyser);
         if (audioCtx.state === "suspended") audioCtx.resume();
         if (!rafId) drawBars();
-
         window.__ar_mic_on = true;
         notify('mic:open', { toolbar: true });
         notify('mic:ready', { toolbar: true });
       })
       .catch((err) => {
+        // Undo analyser/context setup if stream acquisition fails.
+        window.__ar_mic_analyser = null;
+        analyser = null;
+        try { audioCtx.close(); } catch (_) {}
+        audioCtx = null;
         notify('mic:error', { error: err?.message ?? String(err) });
         console.warn("Mic unavailable:", err?.message ?? err);
       });
